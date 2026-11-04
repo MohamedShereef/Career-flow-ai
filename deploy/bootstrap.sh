@@ -68,15 +68,34 @@ log "Building and starting containers"
 $DOCKER compose --env-file .env up -d --build --remove-orphans
 $DOCKER image prune -f >/dev/null
 
-# 6) Wait for health
+# 6) Restart Caddy so a certificate that failed earlier (e.g. ports opened late) is retried now.
+mkdir -p diag
+$DOCKER compose --env-file .env restart caddy >/dev/null 2>&1 || true
+
+write_diag() {
+  {
+    echo "# CareerFlow status — $(date -u '+%F %T UTC')"
+    echo "commit: $(git -C .. rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "site:   https://$(grep ^SITE_ADDRESS= .env | cut -d= -f2)"
+    echo; echo "## containers"; $DOCKER compose --env-file .env ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' 2>&1
+    echo; echo "## app health (inside server)"; $DOCKER compose --env-file .env exec -T web curl -s http://localhost:3000/api/health 2>&1 || echo "web not answering"
+    echo; echo "## firewall INPUT"; sudo iptables -S INPUT 2>&1 | head -20
+    echo; echo "## caddy (https certificate)"; $DOCKER compose --env-file .env logs --no-color --tail 40 caddy 2>&1 | cut -c1-400
+    echo; echo "## migrate"; $DOCKER compose --env-file .env logs --no-color --tail 15 migrate 2>&1 | cut -c1-300
+    echo; echo "## worker"; $DOCKER compose --env-file .env logs --no-color --tail 15 worker 2>&1 | cut -c1-300
+  } > diag/status.txt
+}
+
+# 7) Wait for health
 SITE=$(grep ^SITE_ADDRESS= .env | cut -d= -f2)
 for i in $(seq 1 60); do
   if $DOCKER compose --env-file .env exec -T web curl -sf http://localhost:3000/api/health >/dev/null 2>&1; then
+    sleep 20; write_diag
     log "Healthy. Open: https://$SITE"
     exit 0
   fi
   sleep 5
 done
-echo "App did not become healthy in time. Recent logs:"
-$DOCKER compose --env-file .env logs --tail 80 web worker migrate
+write_diag
+echo "App did not become healthy in time. See http://<server-ip>/_diag/status.txt"
 exit 1

@@ -3,3 +3,13 @@
 	encode zstd gzip
 	reverse_proxy web:3000
 }
+
+# Plain-HTTP status page on the bare IP (http://<server-ip>/_diag/) so setup problems,
+# such as a missing HTTPS certificate, can be diagnosed without SSH. Contains no secrets.
+http:// {
+	handle_path /_diag/* {
+		root * /srv/diag
+		file_server browse
+	}
+	respond "CareerFlow server is up. Open https://{$SITE_ADDRESS}" 200
+}

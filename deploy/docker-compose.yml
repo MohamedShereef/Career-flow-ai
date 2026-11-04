@@ -74,6 +74,7 @@ services:
       SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in deploy/.env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./diag:/srv/diag:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [web]
