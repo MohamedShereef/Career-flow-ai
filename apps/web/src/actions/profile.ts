@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { AppError, answers, documents, profile, settings } from "@careerflow/core";
+import { redirect } from "next/navigation";
+import { AppError, ai, answers, cvImport, documents, profile, settings } from "@careerflow/core";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { list, optStr, runAction, str, type ActionState } from "@/lib/action";
@@ -152,14 +153,27 @@ export async function deleteFactAction(fd: FormData) {
 
 export async function uploadDocumentAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const user = await requireUser();
-  return runAction(async () => {
+  let importId: string | null = null;
+  const state = await runAction(async () => {
     const file = fd.get("file");
     if (!(file instanceof File) || file.size === 0) throw new AppError("no_file", "Choose a file to upload.");
     const kind = (str(fd, "kind") || "cv_original") as documents.UserDocumentKind;
     if (!["cv_original", "certificate", "supporting"].includes(kind)) throw new AppError("bad_kind", "Unknown document type.");
-    await documents.uploadDocument(db(), user.id, { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) }, kind, optStr(fd, "label"));
-    return done("Uploaded.");
+    const doc = await documents.uploadDocument(db(), user.id, { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) }, kind, optStr(fd, "label"));
+    done();
+    // A CV is read straight away so the profile can be filled from it.
+    if (kind === "cv_original" && ai.aiConfigured()) {
+      try {
+        importId = (await cvImport.extractFromCv(db(), user.id, doc.id)).id;
+      } catch (err) {
+        const why = err instanceof AppError ? err.userMessage : "the AI step failed";
+        return `Uploaded, but reading it automatically didn't work: ${why} You can retry with “Fill my profile from this CV”.`;
+      }
+    }
+    return "Uploaded.";
   });
+  if (importId) redirect(`/profile/import/${importId}`);
+  return state;
 }
 
 export async function setPrimaryCvAction(fd: FormData) {

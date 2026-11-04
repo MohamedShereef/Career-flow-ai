@@ -21,8 +21,7 @@ await page.waitForURL(/\/profile/);
 await page.goto(`${BASE}/profile?tab=documents`);
 await page.setInputFiles('input[type="file"]', CV);
 await page.click('button:has-text("Upload")');
-await see("Uploaded.");
-await page.click('button:has-text("Fill my profile from this CV")');
+// Upload reads the CV automatically and opens the review page.
 await page.waitForURL(/\/profile\/import\//, { timeout: 120_000 });
 await see("Review what we read from your CV");
 await shot("20-import-review");

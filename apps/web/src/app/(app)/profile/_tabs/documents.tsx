@@ -51,12 +51,12 @@ export async function DocumentsTab({ userId }: { userId: string }) {
             Reading your CV automatically needs the AI engine. Add your OpenAI key on the server to turn it on.
           </p>
         )}
-        <Card title="Upload" description="PDF or Word (.docx), up to 10 MB. Stored privately; only you can download. After uploading, press “Fill my profile from this CV”.">
+        <Card title="Upload" description="PDF or Word (.docx), up to 10 MB. Stored privately; only you can download. A CV is read automatically right after upload so you can review and add it to your profile.">
           <ActionForm action={uploadDocumentAction} className="space-y-3" resetOnSuccess>
             <input type="file" name="file" required accept=".pdf,.docx,.png,.jpg,.jpeg" className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-brand-700" />
             <Select label="Type" name="kind" options={[["cv_original", "CV"], ["certificate", "Certificate"], ["supporting", "Supporting document"]]} />
             <Field label="Label (optional)" name="label" placeholder="Main CV – 2026" />
-            <SubmitButton pendingText="Uploading…">Upload</SubmitButton>
+            <SubmitButton pendingText="Uploading and reading your CV… (about a minute)">Upload</SubmitButton>
           </ActionForm>
         </Card>
       </div>

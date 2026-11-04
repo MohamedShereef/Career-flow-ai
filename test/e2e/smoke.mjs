@@ -81,7 +81,7 @@ await step("06-upload-cv", async () => {
   writeFileSync("/tmp/cv.pdf", "%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF");
   await page.setInputFiles('input[type="file"]', "/tmp/cv.pdf");
   await page.click('button:has-text("Upload")');
-  await expectText("Uploaded.");
+  await expectText("Uploaded");
   await page.reload();
   await expectText("Main CV");
   const href = await page.locator('a[href^="/api/documents/"]').first().getAttribute("href");
