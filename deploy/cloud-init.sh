@@ -10,7 +10,26 @@ APP=/opt/careerflow
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y && apt-get install -y git curl openssl
-command -v docker || curl -fsSL https://get.docker.com | sh
+# Docker: official script first; if it refuses this Ubuntu version, add Docker's apt
+# repository directly; last resort, Ubuntu's own packages.
+install_docker() {
+  if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then return 0; fi
+  if curl -fsSL https://get.docker.com | sh && docker compose version >/dev/null 2>&1; then return 0; fi
+  echo "get.docker.com failed; trying Docker apt repo"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -y
+  if apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then return 0; fi
+  echo "Docker repo failed; falling back to Ubuntu packages"
+  rm -f /etc/apt/sources.list.d/docker.list
+  apt-get update -y
+  apt-get install -y docker.io docker-compose-v2 docker-buildx || apt-get install -y docker.io docker-compose-v2
+}
+install_docker
+systemctl enable --now docker
+docker compose version
 [ -d "$APP/.git" ] || git clone --depth 1 "$REPO" "$APP"
 
 cat > /etc/careerflow.env <<ENV
