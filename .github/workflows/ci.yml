@@ -1,0 +1,44 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: careerflow_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/careerflow_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/careerflow_test
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit + integration tests (real Postgres)
+        run: npm test
+      - name: Migrations are in sync with the schema
+        run: npm run db:generate && git diff --exit-code packages/db/migrations
+      - name: Build web
+        run: npm run build
+        env:
+          APP_ENCRYPTION_KEY: ${{ secrets.CI_ENCRYPTION_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
+      - name: Browser smoke test (real Chromium)
+        run: |
+          npx playwright-core install chromium
+          export APP_ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+          export APP_HASH_KEY=ci STORAGE_DRIVER=local ALLOW_LOCAL_STORAGE=true LOCAL_STORAGE_DIR=/tmp/cf
+          npm run db:migrate
+          (cd apps/web && npx next start -p 3000 &) 
+          (cd apps/worker && PORT=8080 npx tsx src/main.ts &)
+          npx wait-on -t 60000 http://localhost:3000/api/health
+          CHROME_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())") npm run e2e

@@ -1,0 +1,33 @@
+{
+  "name": "careerflow-ai",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @careerflow/web",
+    "dev:worker": "npm run dev -w @careerflow/worker",
+    "build": "npm run build -w @careerflow/web",
+    "start:worker": "npm run start -w @careerflow/worker",
+    "db:generate": "npm run generate -w @careerflow/db",
+    "db:migrate": "npm run migrate -w @careerflow/db",
+    "typecheck": "tsc -p packages/core && tsc -p packages/db && tsc -p apps/worker && tsc -p apps/web --noEmit",
+    "test": "vitest run",
+    "lint": "npm run typecheck",
+    "keys": "node scripts/gen-keys.mjs",
+    "e2e": "node test/e2e/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "playwright-core": "1.56",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}
