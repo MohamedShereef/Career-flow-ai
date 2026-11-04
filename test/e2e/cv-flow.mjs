@@ -38,7 +38,7 @@ await page.goto(`${BASE}/profile?tab=qualifications`);
 await see("In progress");
 console.log("✓ experience + in-progress CIPS on profile");
 
-await page.goto(`${BASE}/jobs`);
+await page.goto(`${BASE}/jobs?tab=tailor`);
 await page.fill('input[name="jobTitle"]', "Senior Procurement Engineer");
 await page.fill('input[name="companyName"]', "Acme Giga Projects");
 await page.fill(

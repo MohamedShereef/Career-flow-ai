@@ -1,15 +1,16 @@
 import Link from "next/link";
-import { auth, dashboard, settings } from "@careerflow/core";
+import { SOURCE_HELP, auth, dashboard, discovery, settings } from "@careerflow/core";
 import { changePasswordAction, signOutOtherSessionsAction } from "@/actions/auth";
 import { consentAction, saveAutomationAction } from "@/actions/profile";
+import { addSourceAction, toggleSourceAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
-import { Badge, Card, Field, PageHeader, Select, fmtDate } from "@/components/ui";
+import { Badge, Card, EmptyState, Field, PageHeader, Select, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 
 export const metadata = { title: "Settings" };
 
-const TABS = [["automation", "Automation & limits"], ["consent", "Consent"], ["integrations", "Integrations"], ["security", "Security"], ["diagnostics", "Diagnostics"]] as const;
+const TABS = [["automation", "Automation & limits"], ["sources", "Job sources"], ["consent", "Consent"], ["integrations", "Integrations"], ["security", "Security"], ["diagnostics", "Diagnostics"]] as const;
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const user = await requireUser();
@@ -77,6 +78,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Card>
       )}
 
+      {tab === "sources" && <Sources />}
       {tab === "integrations" && <Integrations />}
       {tab === "security" && <Security userId={user.id} />}
       {tab === "diagnostics" && <Diagnostics />}
@@ -159,6 +161,63 @@ async function Diagnostics() {
           </ul>
         )}
       </Card>
+    </div>
+  );
+}
+
+async function Sources() {
+  const rows = await discovery.listSources(db());
+  const tone = (h: string) => (h === "healthy" ? "good" : h === "degraded" ? "attention" : h === "failing" ? "bad" : "neutral");
+  return (
+    <div className="grid gap-6 lg:grid-cols-5">
+      <div className="lg:col-span-3">
+        <Card title="Job boards the agent watches" description="Official employer career sites, checked every 6 hours. Only procurement-family roles are kept.">
+          {rows.length === 0 ? (
+            <EmptyState title="No sources yet">They're added automatically when the worker starts.</EmptyState>
+          ) : (
+            <ul className="divide-y divide-line">
+              {rows.map(({ source: s, activeJobs }) => (
+                <li key={s.id} className="py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-medium">{s.name} <span className="text-xs font-normal text-muted">· {SOURCE_HELP[s.kind]?.label ?? s.kind}</span></div>
+                      <div className="truncate text-xs text-muted">{s.identifier}</div>
+                      <div className="mt-1 text-xs text-muted">{activeJobs} open procurement roles · last success {fmtDate(s.lastSuccessAt)}</div>
+                      {s.lastError && <div className="mt-1 text-xs text-bad">Last error: {s.lastError}</div>}
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <Badge tone={tone(s.health)}>{s.health}</Badge>
+                      <form action={toggleSourceAction}>
+                        <input type="hidden" name="id" value={s.id} />
+                        <input type="hidden" name="enabled" value={s.enabled ? "0" : "1"} />
+                        <button className="btn-ghost text-xs">{s.enabled ? "Pause" : "Resume"}</button>
+                      </form>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+      <div className="lg:col-span-2">
+        <Card title="Add an employer's job board" description="Find the company's careers page, check which system it uses (the address usually shows it), and paste the part shown in the example.">
+          <ActionForm action={addSourceAction} className="space-y-3">
+            <Select label="System" name="kind" options={Object.entries(SOURCE_HELP).map(([k, v]) => [k, v.label] as [string, string])} />
+            <Field label="Company name" name="name" required placeholder="Red Sea Global" />
+            <Field label="Address or id" name="identifier" required placeholder="See examples below" />
+            <ul className="space-y-1 text-xs text-muted">
+              {Object.values(SOURCE_HELP).map((h) => (
+                <li key={h.label}><strong>{h.label}:</strong> {h.identifier} — e.g. <code>{h.example}</code></li>
+              ))}
+            </ul>
+            <div className="flex gap-2">
+              <button name="intent" value="test" className="btn-secondary">Test</button>
+              <SubmitButton>Add source</SubmitButton>
+            </div>
+          </ActionForm>
+        </Card>
+      </div>
     </div>
   );
 }

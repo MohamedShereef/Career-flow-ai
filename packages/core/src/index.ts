@@ -17,3 +17,7 @@ export * as ai from "./ai";
 export { FactGuard, numbersIn } from "./fact-guard";
 export * as cvImport from "./services/cv-import";
 export * as tailor from "./services/tailor";
+export * as discovery from "./services/discovery";
+export * as employers from "./services/employers";
+export * as matching from "./services/matching";
+export { SOURCE_HELP } from "./discovery/adapters";

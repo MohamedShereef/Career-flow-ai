@@ -38,6 +38,10 @@ export const profileUpdateSchema = z
     excludedCompanies: list,
     workArrangements: list,
     industries: list,
+    preferredEmployerTypes: z.array(z.enum(["client_developer", "government", "pmc_consultant", "tier1_contractor", "subcontractor", "small_contractor", "recruitment_agency"])),
+    excludedEmployerTypes: z.array(z.enum(["client_developer", "government", "pmc_consultant", "tier1_contractor", "subcontractor", "small_contractor", "recruitment_agency"])),
+    minEmployerScale: z.enum(["large", "mid", "any"]),
+    preferPif: z.boolean(),
   })
   .partial();
 

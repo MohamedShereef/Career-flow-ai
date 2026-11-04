@@ -46,7 +46,9 @@ export function ActionForm({
         className={className}
         onSubmit={(e) => {
           e.preventDefault();
-          const fd = new FormData(e.currentTarget);
+          // Include the clicked button (name/value) so one form can have several actions.
+          const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLElement | null;
+          const fd = new FormData(e.currentTarget, submitter);
           startTransition(() => formAction(fd));
         }}
       >

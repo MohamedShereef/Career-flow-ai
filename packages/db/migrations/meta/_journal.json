@@ -15,6 +15,13 @@
       "when": 1793803104745,
       "tag": "0001_cv_tailoring",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793805106199,
+      "tag": "0002_discovery_vetting",
+      "breakpoints": true
     }
   ]
 }

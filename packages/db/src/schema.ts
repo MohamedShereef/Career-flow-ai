@@ -62,6 +62,8 @@ export const answerSensitivity = pgEnum("answer_sensitivity", [
 export const pendingQuestionStatus = pgEnum("pending_question_status", ["open", "answered", "dismissed"]);
 
 export const sourceKind = pgEnum("source_kind", [
+  "workday",
+  "successfactors",
   "greenhouse",
   "lever",
   "ashby",
@@ -237,6 +239,12 @@ export const applicantProfiles = pgTable(
     excludedCompanies: text("excluded_companies").array().notNull().default(sql`'{}'::text[]`),
     workArrangements: text("work_arrangements").array().notNull().default(sql`'{}'::text[]`),
     industries: text("industries").array().notNull().default(sql`'{}'::text[]`),
+    /** client_developer | government | pmc_consultant | tier1_contractor | subcontractor | small_contractor | recruitment_agency */
+    preferredEmployerTypes: text("preferred_employer_types").array().notNull().default(sql`'{client_developer,government,pmc_consultant,tier1_contractor}'::text[]`),
+    excludedEmployerTypes: text("excluded_employer_types").array().notNull().default(sql`'{subcontractor,small_contractor}'::text[]`),
+    /** large | mid | any — employers assessed below this are not applied to automatically. */
+    minEmployerScale: text("min_employer_scale").notNull().default("large"),
+    preferPif: boolean("prefer_pif").notNull().default(true),
     /** Bumped on every material change so matching results can be invalidated. */
     profileVersion: integer("profile_version").notNull().default(1),
     updatedAt: updatedAt(),
@@ -917,3 +925,22 @@ export const cvTailorings = pgTable(
   },
   (t) => [index("cv_tailorings_user_idx").on(t.userId, t.createdAt)],
 );
+
+// ───────────────────────────── Employer vetting ─────────────────────────────
+
+/** One AI assessment per employer, shared by all users and refreshed periodically. */
+export const employerAssessments = pgTable("employer_assessments", {
+  employerKey: text("employer_key").primaryKey(),
+  companyName: text("company_name").notNull(),
+  /** client_developer | government | pmc_consultant | tier1_contractor | subcontractor | small_contractor | recruitment_agency | other | unknown */
+  employerType: text("employer_type").notNull(),
+  /** large | mid | small | unknown */
+  scale: text("scale").notNull(),
+  pifAffiliated: text("pif_affiliated").notNull().default("unknown"), // yes | no | unknown
+  summary: text("summary"),
+  redFlags: jsonb("red_flags").$type<string[]>().notNull().default([]),
+  confidence: numeric("confidence", { precision: 4, scale: 3 }),
+  method: decisionMethod("method").notNull(),
+  aiDecisionId: uuid("ai_decision_id"),
+  assessedAt: ts("assessed_at").notNull().defaultNow(),
+});

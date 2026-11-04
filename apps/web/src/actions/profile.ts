@@ -49,6 +49,10 @@ export async function savePreferencesAction(_: ActionState, fd: FormData): Promi
       excludedCompanies: list(fd, "excludedCompanies"),
       industries: list(fd, "industries"),
       workArrangements: fd.getAll("workArrangements").map(String),
+      preferredEmployerTypes: fd.getAll("preferredEmployerTypes").map(String) as never,
+      excludedEmployerTypes: fd.getAll("excludedEmployerTypes").map(String) as never,
+      minEmployerScale: (str(fd, "minEmployerScale") || "large") as "large" | "mid" | "any",
+      preferPif: fd.get("preferPif") === "on",
     });
     return done("Job preferences saved.");
   });

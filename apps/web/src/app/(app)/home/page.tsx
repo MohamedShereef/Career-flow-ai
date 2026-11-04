@@ -13,8 +13,8 @@ function capabilities(aiReady: boolean): Array<{ name: string; live: boolean; no
     { name: "Profile, verified facts & saved answers", live: true, note: "Ready" },
     { name: "Fill profile from your CV", live: aiReady, note: needsAi },
     { name: "Tailored CV & cover letters", live: aiReady, note: needsAi },
-    { name: "AI job discovery & matching", live: false, note: "Next release" },
-    { name: "Auto-apply on employer sites", live: false, note: "Planned" },
+    { name: "Job discovery, employer vetting & matching", live: aiReady, note: aiReady ? "Ready" : "Needs AI key" },
+    { name: "Auto-apply on employer sites", live: false, note: "Next release" },
     { name: "Gmail tracking & interview scheduling", live: false, note: "Planned" },
   ];
 }

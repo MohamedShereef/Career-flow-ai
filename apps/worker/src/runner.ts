@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { Database } from "@careerflow/db";
-import { queue } from "@careerflow/core";
+import { discovery, queue } from "@careerflow/core";
 import { NonRetryableError, type Handler, systemSchedules } from "./handlers";
 import { log } from "./log";
 
@@ -47,6 +47,7 @@ export class Runner {
 
   /** Create system schedules if missing. */
   async ensureSchedules() {
+    await discovery.ensureSeedSources(this.db).catch((e) => log("warn", "seed sources failed", { error: String(e) }));
     for (const s of systemSchedules) {
       await this.db.execute(sql`
         INSERT INTO schedules (user_id, kind, interval_minutes) VALUES (NULL, ${s.kind}, ${s.intervalMinutes})

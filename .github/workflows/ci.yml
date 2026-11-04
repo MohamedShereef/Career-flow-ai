@@ -38,7 +38,7 @@ jobs:
           npx playwright-core install --with-deps chromium
           export APP_ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
           export APP_HASH_KEY=ci STORAGE_DRIVER=local ALLOW_LOCAL_STORAGE=true LOCAL_STORAGE_DIR=/tmp/cf
-          export OPENAI_API_KEY=mock OPENAI_BASE_URL=http://localhost:4010/v1
+          export OPENAI_API_KEY=mock OPENAI_BASE_URL=http://localhost:4010/v1 SEED_SOURCES=off
           node test/e2e/mock-openai.mjs &
           npx tsx test/e2e/make-cv.mts /tmp/real-cv.pdf
           npm run db:migrate
@@ -46,7 +46,7 @@ jobs:
           (cd apps/worker && PORT=8080 npx tsx src/main.ts &)
           for i in $(seq 1 60); do curl -sf http://localhost:3000/api/health && break; sleep 1; done
           export CHROME_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())")
-          npm run e2e && npm run e2e:cv
+          npm run e2e && npm run e2e:cv && npm run e2e:discovery
 
   docker:
     # Proves the production image builds (the server builds the same Dockerfile).
