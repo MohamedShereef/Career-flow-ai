@@ -8,3 +8,4 @@ coverage/
 *.log
 .turbo
 dist
+*.tsbuildinfo
