@@ -10,7 +10,7 @@ const securityHeaders = [
 
 const config: NextConfig = {
   transpilePackages: ["@careerflow/core", "@careerflow/db"],
-  serverExternalPackages: ["pg", "@aws-sdk/client-s3"],
+  serverExternalPackages: ["pg", "@aws-sdk/client-s3", "pdfkit", "unpdf", "mammoth"],
   poweredByHeader: false,
   experimental: { serverActions: { bodySizeLimit: "11mb" } },
   async headers() {

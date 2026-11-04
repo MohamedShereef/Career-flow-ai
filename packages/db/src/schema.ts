@@ -891,3 +891,29 @@ export const schedules = pgTable(
   },
   (t) => [uniqueIndex("schedules_user_kind_uq").on(sql`coalesce(${t.userId}::text, '')`, t.kind)],
 );
+
+// ───────────────────────────── CV tailoring ─────────────────────────────
+
+/** A tailored CV (and optional cover letter) generated for one job description. */
+export const cvTailorings = pgTable(
+  "cv_tailorings",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    jobTitle: text("job_title").notNull(),
+    companyName: text("company_name").notNull(),
+    jobDescription: text("job_description").notNull(),
+    profileVersion: integer("profile_version").notNull(),
+    /** Structured tailored content (summary, bullets, fact ids, skills, letter). */
+    content: jsonb("content").notNull(),
+    /** Statements removed by the fact guard because they weren't supported by the profile. */
+    guardRemovals: jsonb("guard_removals").$type<string[]>().notNull().default([]),
+    cvDocumentId: uuid("cv_document_id").references(() => documents.id, { onDelete: "set null" }),
+    coverLetterDocumentId: uuid("cover_letter_document_id").references(() => documents.id, { onDelete: "set null" }),
+    aiDecisionId: uuid("ai_decision_id"),
+    approvedAt: ts("approved_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("cv_tailorings_user_idx").on(t.userId, t.createdAt)],
+);

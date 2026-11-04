@@ -1,5 +1,7 @@
 import { documents } from "@careerflow/core";
+import { ai } from "@careerflow/core";
 import { deleteDocumentAction, setPrimaryCvAction, uploadDocumentAction } from "@/actions/profile";
+import { extractCvAction } from "@/actions/cv";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { Badge, Card, EmptyState, Field, Select, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
@@ -8,6 +10,7 @@ const KIND: Record<string, string> = { cv_original: "CV", certificate: "Certific
 
 export async function DocumentsTab({ userId }: { userId: string }) {
   const docs = await documents.listDocuments(db(), userId, ["cv_original", "certificate", "supporting"]);
+  const aiReady = ai.aiConfigured();
   return (
     <div className="grid gap-6 lg:grid-cols-5">
       <div className="lg:col-span-3">
@@ -21,7 +24,13 @@ export async function DocumentsTab({ userId }: { userId: string }) {
                   <a href={`/api/documents/${d.id}`} target="_blank" className="block truncate text-sm font-medium text-brand-700 hover:underline">{d.label || d.filename}</a>
                   <div className="text-xs text-muted">{KIND[d.kind]} · {(d.sizeBytes / 1024).toFixed(0)} KB · {fmtDate(d.createdAt)}</div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  {d.kind === "cv_original" && aiReady && (
+                    <ActionForm action={extractCvAction}>
+                      <input type="hidden" name="documentId" value={d.id} />
+                      <SubmitButton className="btn-secondary px-3 py-1 text-xs" pendingText="Reading your CV… (up to a minute)">Fill my profile from this CV</SubmitButton>
+                    </ActionForm>
+                  )}
                   {d.isPrimary ? (
                     <Badge tone="brand">Main CV</Badge>
                   ) : (
@@ -37,7 +46,12 @@ export async function DocumentsTab({ userId }: { userId: string }) {
         )}
       </div>
       <div className="lg:col-span-2">
-        <Card title="Upload" description="PDF or Word (.docx), up to 10 MB. Stored privately; only you can download.">
+        {!aiReady && (
+          <p className="mb-4 rounded-xl border border-attention/30 bg-attention-50 p-3 text-sm text-attention">
+            Reading your CV automatically needs the AI engine. Add your OpenAI key on the server to turn it on.
+          </p>
+        )}
+        <Card title="Upload" description="PDF or Word (.docx), up to 10 MB. Stored privately; only you can download. After uploading, press “Fill my profile from this CV”.">
           <ActionForm action={uploadDocumentAction} className="space-y-3" resetOnSuccess>
             <input type="file" name="file" required accept=".pdf,.docx,.png,.jpg,.jpeg" className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-brand-700" />
             <Select label="Type" name="kind" options={[["cv_original", "CV"], ["certificate", "Certificate"], ["supporting", "Supporting document"]]} />

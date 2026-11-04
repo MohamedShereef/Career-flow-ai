@@ -129,8 +129,8 @@ Railway for the worker (`railway.json`), and Neon for Postgres. Set the variable
 |---|---|
 | **1 · Foundation** ✅ | Schema, auth, profile, verified facts, saved answers, inbox, documents, durable worker, CI |
 | 2 · Intelligence | Discovery adapters (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, career sites); OpenAI supervisor and matching with explainable scores; decision trace with cost, latency and tokens; Fresh Discovery / Reindex |
-| 3 · Documents | AI CV extraction → user confirmation; tailored ATS-friendly PDF CVs and cover letters built only from verified facts; diff against the original |
+| **3 · Documents** ✅ | AI reads an uploaded CV → you review and select → profile filled (numbers stay drafts until verified). Tailored ATS-friendly PDF CV + cover letter per job, built only from your profile. A deterministic fact guard removes any sentence with a number or certification that isn't backed by your profile. Original-vs-tailored view; approval freezes the version |
 | 4 · Application automation | Playwright ATS adapters, form reasoning, upload checks, approval previews tied to a content hash, safe submission and evidence capture |
-| 5 · Tracking | Gmail OAuth (read-only), receipt and interview classification, one email ↔ one application matching |
+| 5 · Tracking & outreach | Gmail OAuth: receipt / interview / rejection classification, one email ↔ one application; interview-invite replies drafted with your free slots and calendar booking after confirmation; recruiter emails only to verified addresses, each approved by you |
 | 6 · Reliability | Recovery agent, Sentry and tracing, root-cause grouping, in-app assistant |
 | 7 · Pilot | Supervised real-world pilot, then opt-in autopilot |

@@ -13,3 +13,7 @@ export * as documents from "./services/documents";
 export * as dashboard from "./services/dashboard";
 export { audit } from "./services/audit";
 export { enforce as enforceRateLimit } from "./services/rate-limit";
+export * as ai from "./ai";
+export { FactGuard, numbersIn } from "./fact-guard";
+export * as cvImport from "./services/cv-import";
+export * as tailor from "./services/tailor";

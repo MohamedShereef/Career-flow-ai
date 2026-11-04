@@ -93,7 +93,7 @@ async function Integrations() {
           <span>Model: {process.env.OPENAI_MODEL ?? "gpt-5-mini"}</span>
           <Badge tone={aiConfigured ? "good" : "attention"}>{aiConfigured ? "Key configured" : "No API key"}</Badge>
         </div>
-        <p className="mt-2 text-sm text-muted">The key is set as a server environment variable and is never sent to the browser. Live AI decisions start with the matching release.</p>
+        <p className="mt-2 text-sm text-muted">The key is set as a server environment variable and is never sent to the browser. It powers CV reading and tailoring now, and job matching next.</p>
       </Card>
       <Card title="Gmail">
         <div className="flex items-center justify-between text-sm"><span>Read-only access to confirm employer receipts</span><Badge>Coming soon</Badge></div>

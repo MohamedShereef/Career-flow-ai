@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { answers, dashboard, profile } from "@careerflow/core";
+import { ai, answers, dashboard, profile } from "@careerflow/core";
 import { Badge, Card, PageHeader, Stat } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -7,14 +7,17 @@ import { requireUser } from "@/lib/session";
 export const metadata = { title: "Home" };
 
 /** Capabilities ship in stages; this list is honest about what is live. */
-const CAPABILITIES: Array<{ name: string; live: boolean; note: string }> = [
-  { name: "Profile, verified facts & saved answers", live: true, note: "Ready" },
-  { name: "Durable background worker", live: true, note: "Ready" },
-  { name: "AI job discovery & matching", live: false, note: "Next release" },
-  { name: "Tailored CV & cover letters", live: false, note: "Planned" },
-  { name: "Auto-apply on employer sites", live: false, note: "Planned" },
-  { name: "Gmail confirmation tracking", live: false, note: "Planned" },
-];
+function capabilities(aiReady: boolean): Array<{ name: string; live: boolean; note: string }> {
+  const needsAi = aiReady ? "Ready" : "Needs AI key";
+  return [
+    { name: "Profile, verified facts & saved answers", live: true, note: "Ready" },
+    { name: "Fill profile from your CV", live: aiReady, note: needsAi },
+    { name: "Tailored CV & cover letters", live: aiReady, note: needsAi },
+    { name: "AI job discovery & matching", live: false, note: "Next release" },
+    { name: "Auto-apply on employer sites", live: false, note: "Planned" },
+    { name: "Gmail tracking & interview scheduling", live: false, note: "Planned" },
+  ];
+}
 
 export default async function Home() {
   const user = await requireUser();
@@ -88,7 +91,7 @@ export default async function Home() {
         <div className="space-y-6">
           <Card title="Agent capabilities">
             <ul className="space-y-2">
-              {CAPABILITIES.map((c) => (
+              {capabilities(ai.aiConfigured()).map((c) => (
                 <li key={c.name} className="flex items-center justify-between gap-2 text-sm">
                   <span>{c.name}</span>
                   <Badge tone={c.live ? "good" : "neutral"}>{c.note}</Badge>
