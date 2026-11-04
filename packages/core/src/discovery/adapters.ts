@@ -301,3 +301,107 @@ export async function successfactorsDetail(_src: SourceConfig, job: NormalizedJo
 ADAPTERS.successfactors = successfactors;
 DETAIL.successfactors = successfactorsDetail;
 SOURCE_HELP.successfactors = { label: "SAP SuccessFactors careers site", identifier: "Careers site address", example: "https://neom.jobs2web.com" };
+
+// ── Internet-wide search via Google for Jobs (aggregates LinkedIn, Bayt, GulfTalent, Indeed,
+//    Naukrigulf and employers' own sites). Licensed API access; no scraping of those boards. ──
+// identifier = location to search, e.g. "Saudi Arabia". Needs SERPAPI_KEY or JSEARCH_API_KEY.
+
+const AGGREGATOR_HOSTS = /linkedin\.|bayt\.|indeed\.|gulftalent\.|naukrigulf\.|glassdoor\.|monstergulf|foundit|jooble|careerjet|talent\.com|jobrapido|laimoon|tanqeeb|drjobs|qureos|ziprecruiter|wuzzuf|sabbar|jobleads/i;
+
+/** Prefer the employer's own application page over job-board copies. */
+function bestApplyLink(options: Array<{ link?: string; apply_link?: string; is_direct?: boolean }>, fallback: string) {
+  const links = options.map((o) => ({ url: o.link ?? o.apply_link ?? "", direct: !!o.is_direct })).filter((o) => o.url);
+  return links.find((l) => l.direct)?.url ?? links.find((l) => !AGGREGATOR_HOSTS.test(l.url))?.url ?? links[0]?.url ?? fallback;
+}
+
+const queriesFor = (src: SourceConfig, ctx: FetchContext) => (ctx.queries.length ? ctx.queries : ["procurement"]).slice(0, Number(src.config.maxQueries ?? 4));
+
+type SerpJob = { job_id?: string; title: string; company_name: string; location?: string; via?: string; description?: string; share_link?: string; detected_extensions?: { posted_at?: string; schedule_type?: string; work_from_home?: boolean }; apply_options?: Array<{ title?: string; link?: string }> };
+export const googleJobs: Adapter = async (src, ctx) => {
+  const key = process.env.SERPAPI_KEY;
+  if (!key) throw new Error("SERPAPI_KEY is not set on the server");
+  const out = new Map<string, NormalizedJob>();
+  for (const q of queriesFor(src, ctx)) {
+    const url = `https://serpapi.com/search.json?engine=google_jobs&q=${encodeURIComponent(`${q} ${src.identifier}`)}&location=${encodeURIComponent(src.identifier)}&hl=en&api_key=${encodeURIComponent(key)}`;
+    const data = await getJson<{ jobs_results?: SerpJob[]; error?: string }>(ctx, url);
+    if (data.error && !/hasn't returned any results/i.test(data.error)) throw new Error(`SerpApi: ${data.error}`);
+    for (const j of data.jobs_results ?? []) {
+      const id = j.job_id ?? `${j.company_name}|${j.title}|${j.location}`;
+      if (out.has(id)) continue;
+      const apply = bestApplyLink(j.apply_options ?? [], j.share_link ?? "");
+      out.set(id, {
+        externalId: sha1ish(id),
+        title: j.title,
+        companyName: j.company_name,
+        location: s(j.location),
+        country: guessCountry(j.location, src.identifier),
+        remoteType: j.detected_extensions?.work_from_home ? "remote" : null,
+        employmentType: s(j.detected_extensions?.schedule_type),
+        description: s(j.description),
+        postedAt: relativeDate(j.detected_extensions?.posted_at),
+        sourceUrl: apply,
+        applyUrl: apply,
+        atsKind: `google_jobs${j.via ? `:${j.via.replace(/^via\s+/i, "")}` : ""}`.slice(0, 60),
+      });
+    }
+  }
+  return [...out.values()].slice(0, ctx.limit);
+};
+
+type JsJob = { job_id: string; job_title: string; employer_name: string; job_city?: string; job_state?: string; job_country?: string; job_location?: string; job_description?: string; job_apply_link?: string; job_google_link?: string; job_publisher?: string; job_employment_type?: string; job_is_remote?: boolean; job_posted_at_datetime_utc?: string; job_min_salary?: number | null; job_max_salary?: number | null; job_salary_currency?: string | null; apply_options?: Array<{ apply_link?: string; is_direct?: boolean; publisher?: string }> };
+export const jsearch: Adapter = async (src, ctx) => {
+  const key = process.env.JSEARCH_API_KEY;
+  if (!key) throw new Error("JSEARCH_API_KEY is not set on the server");
+  const host = process.env.JSEARCH_HOST ?? "jsearch.p.rapidapi.com";
+  const out = new Map<string, NormalizedJob>();
+  for (const q of queriesFor(src, ctx)) {
+    const url = `https://${host}/search?query=${encodeURIComponent(`${q} in ${src.identifier}`)}&page=1&num_pages=1&date_posted=month`;
+    const data = await getJson<{ data?: JsJob[]; status?: string; message?: string }>(ctx, url, { headers: { "X-RapidAPI-Key": key, "X-RapidAPI-Host": host } });
+    if (data.status && data.status !== "OK") throw new Error(`JSearch: ${data.message ?? data.status}`);
+    for (const j of data.data ?? []) {
+      if (out.has(j.job_id)) continue;
+      const loc = s(j.job_location) ?? s([j.job_city, j.job_state, j.job_country].filter(Boolean).join(", "));
+      const apply = bestApplyLink(j.apply_options ?? [], j.job_apply_link ?? j.job_google_link ?? "");
+      out.set(j.job_id, {
+        externalId: sha1ish(j.job_id),
+        title: j.job_title,
+        companyName: j.employer_name,
+        location: loc,
+        country: guessCountry(loc, j.job_country),
+        remoteType: j.job_is_remote ? "remote" : null,
+        employmentType: s(j.job_employment_type),
+        description: s(j.job_description),
+        postedAt: toDate(j.job_posted_at_datetime_utc),
+        sourceUrl: apply,
+        applyUrl: apply,
+        atsKind: `jsearch${j.job_publisher ? `:${j.job_publisher}` : ""}`.slice(0, 60),
+        salaryMin: j.job_min_salary ?? null,
+        salaryMax: j.job_max_salary ?? null,
+        salaryCurrency: j.job_salary_currency ?? null,
+      });
+    }
+  }
+  return [...out.values()].slice(0, ctx.limit);
+};
+
+function sha1ish(v: string) {
+  // Short stable id (external ids from aggregators can be very long).
+  let h = 0;
+  for (let i = 0; i < v.length; i++) h = (Math.imul(31, h) + v.charCodeAt(i)) | 0;
+  return `${(h >>> 0).toString(36)}-${v.length.toString(36)}-${v.slice(0, 24).replace(/[^a-z0-9]/gi, "")}`;
+}
+
+/** "3 days ago" → Date */
+function relativeDate(v?: string): Date | null {
+  if (!v) return null;
+  const m = v.match(/(\d+)\s*(hour|day|week|month)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const unit = { hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 }[m[2]!.toLowerCase() as "hour"]!;
+  return new Date(Date.now() - n * unit);
+}
+
+ADAPTERS.google_jobs = googleJobs;
+ADAPTERS.jsearch = jsearch;
+SOURCE_HELP.google_jobs = { label: "Internet-wide search (Google for Jobs via SerpApi)", identifier: "Country or city to search", example: "Saudi Arabia" };
+SOURCE_HELP.jsearch = { label: "Internet-wide search (JSearch)", identifier: "Country or city to search", example: "Saudi Arabia" };

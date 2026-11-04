@@ -151,3 +151,46 @@ describe("matching", () => {
     expect((await matching.evaluateJobsForUser(db, user.id)).evaluated).toBe(4);
   });
 });
+
+describe("internet-wide search (Google for Jobs)", () => {
+  it("prefers the employer's own apply link and dedupes against the employer's board", async () => {
+    const db = testDb();
+    process.env.SERPAPI_KEY = "test";
+    const [agg] = await db.insert(jobSources).values({ kind: "google_jobs", name: "Google for Jobs – Saudi Arabia", identifier: "Saudi Arabia", config: { maxQueries: 1 } }).returning();
+    const fetchImpl = (async (url: string | URL) => {
+      if (String(url).includes("serpapi.com")) {
+        return json({
+          jobs_results: [
+            {
+              job_id: "abc",
+              title: "Senior Procurement Engineer",
+              company_name: "Acme Giga",
+              location: "Riyadh, Saudi Arabia",
+              via: "LinkedIn",
+              description: LONG,
+              detected_extensions: { posted_at: "3 days ago" },
+              apply_options: [{ title: "LinkedIn", link: "https://www.linkedin.com/jobs/view/1" }, { title: "Acme Careers", link: "https://careers.acme.com/job/42" }],
+            },
+          ],
+        });
+      }
+      return greenhouseFetch([{ id: 1, title: "Senior Procurement Engineer", location: "Riyadh, Saudi Arabia" }])(url);
+    }) as typeof fetch;
+    const r = await discovery.runSource(db, agg!.id, "manual", { fetchImpl });
+    expect(r.new).toBe(1);
+    const [j] = await db.select().from(jobs);
+    expect(j!.applyUrl).toBe("https://careers.acme.com/job/42");
+    expect(j!.atsKind).toBe("google_jobs:LinkedIn");
+
+    // The same posting arriving from the employer's own board is recognised as a duplicate.
+    const [gh] = await db.insert(jobSources).values({ kind: "greenhouse", name: "Acme Giga", identifier: "acme" }).returning();
+    const r2 = await discovery.runSource(db, gh!.id, "manual", { fetchImpl });
+    expect(r2).toMatchObject({ new: 0, updated: 1 });
+    expect(await db.select().from(jobs)).toHaveLength(1);
+
+    // Quota protection: a scheduled run right after a success is skipped.
+    await db.update(jobSources).set({ config: { maxQueries: 1, minIntervalHours: 24 } }).where(eq(jobSources.id, agg!.id));
+    expect((await discovery.runSource(db, agg!.id, "scheduled", { fetchImpl })).seen).toBe(0);
+    delete process.env.SERPAPI_KEY;
+  });
+});

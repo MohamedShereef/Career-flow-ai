@@ -22,6 +22,13 @@
       "when": 1793805106199,
       "tag": "0002_discovery_vetting",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793815227307,
+      "tag": "0003_aggregators",
+      "breakpoints": true
     }
   ]
 }

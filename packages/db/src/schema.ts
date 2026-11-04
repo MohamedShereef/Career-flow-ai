@@ -62,6 +62,8 @@ export const answerSensitivity = pgEnum("answer_sensitivity", [
 export const pendingQuestionStatus = pgEnum("pending_question_status", ["open", "answered", "dismissed"]);
 
 export const sourceKind = pgEnum("source_kind", [
+  "google_jobs",
+  "jsearch",
   "workday",
   "successfactors",
   "greenhouse",

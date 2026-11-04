@@ -30,7 +30,7 @@ export const DEFAULT_QUERIES = ["procurement", "purchasing", "supply chain", "co
 // ── Sources ──
 
 export const sourceInputSchema = z.object({
-  kind: z.enum(["workday", "smartrecruiters", "workable", "greenhouse", "lever", "ashby", "successfactors"]),
+  kind: z.enum(["google_jobs", "jsearch", "workday", "smartrecruiters", "workable", "greenhouse", "lever", "ashby", "successfactors"]),
   name: z.string().trim().min(2).max(120),
   identifier: z.string().trim().min(2).max(300),
 });
@@ -43,10 +43,18 @@ export const SEED_SOURCES: Array<z.infer<typeof sourceInputSchema>> = [
   { kind: "workable", name: "Qiddiya Investment Company", identifier: "qiddiya" },
 ];
 
+export const AGGREGATORS = new Set(["google_jobs", "jsearch"]);
+
 export async function ensureSeedSources(db: Db) {
   if (process.env.SEED_SOURCES === "off") return;
   for (const s of SEED_SOURCES) {
     await db.insert(jobSources).values({ ...s, config: {} }).onConflictDoNothing();
+  }
+  // Internet-wide search is added automatically once its API key is on the server.
+  const where = process.env.SEARCH_LOCATIONS ?? "Saudi Arabia";
+  for (const loc of where.split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (process.env.SERPAPI_KEY) await db.insert(jobSources).values({ kind: "google_jobs", name: `Google for Jobs – ${loc}`, identifier: loc, config: { maxQueries: 4, minIntervalHours: 24 } }).onConflictDoNothing();
+    if (process.env.JSEARCH_API_KEY) await db.insert(jobSources).values({ kind: "jsearch", name: `JSearch – ${loc}`, identifier: loc, config: { maxQueries: 4, minIntervalHours: 24 } }).onConflictDoNothing();
   }
 }
 
@@ -61,7 +69,8 @@ export async function addSource(db: Db, userId: string, input: unknown) {
       throw new AppError("invalid_source", `Paste the full careers page address, e.g. ${SOURCE_HELP[v.kind]!.example}`);
     }
   }
-  const [row] = await db.insert(jobSources).values({ ...v, config: {}, addedByUserId: userId }).onConflictDoNothing().returning();
+  const config = AGGREGATORS.has(v.kind) ? { maxQueries: 4, minIntervalHours: 24 } : {};
+  const [row] = await db.insert(jobSources).values({ ...v, config, addedByUserId: userId }).onConflictDoNothing().returning();
   if (!row) throw new AppError("duplicate_source", "That job board is already being watched.");
   await audit(db, { userId, actor: "user", action: "source.added", entityType: "job_source", entityId: row.id, metadata: { kind: v.kind } });
   return row;
@@ -91,15 +100,10 @@ async function searchQueries(db: Db): Promise<string[]> {
 
 const toSourceConfig = (s: typeof jobSources.$inferSelect): SourceConfig => ({ kind: s.kind, name: s.name, identifier: s.identifier, config: s.config ?? {} });
 
+/** Same employer + title + city = same posting, whichever board it came from. */
 function dedupeKeyFor(j: NormalizedJob) {
-  let applyPath = j.applyUrl;
-  try {
-    const u = new URL(j.applyUrl);
-    applyPath = `${u.host}${u.pathname}`.toLowerCase();
-  } catch {
-    /* keep raw */
-  }
-  return sha256([employerKey(j.companyName), j.title.toLowerCase().replace(/\s+/g, " ").trim(), (j.location ?? "").toLowerCase(), applyPath].join("|"));
+  const city = (j.location ?? "").toLowerCase().split(/[,;(]/)[0]!.trim();
+  return sha256([employerKey(j.companyName), j.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim(), city].join("|"));
 }
 
 export interface RunResult {
@@ -129,6 +133,14 @@ export async function testSource(db: Db, input: unknown) {
 export async function runSource(db: Db, sourceId: string, trigger: "scheduled" | "manual" | "reindex" = "scheduled", opts: { fetchImpl?: typeof fetch; detailLimit?: number } = {}): Promise<RunResult> {
   const [src] = await db.select().from(jobSources).where(eq(jobSources.id, sourceId));
   if (!src) throw notFound("Job source");
+  // Paid/limited APIs run at most once per interval on schedule (protects the free quota).
+  const minHours = Number((src.config as Record<string, unknown>)?.minIntervalHours ?? 0);
+  if (trigger === "scheduled" && minHours && src.lastSuccessAt && Date.now() - src.lastSuccessAt.getTime() < minHours * 3_600_000) {
+    return { seen: 0, relevant: 0, new: 0, updated: 0, closed: 0, detailErrors: 0 };
+  }
+  if (trigger === "manual" && minHours && src.lastSuccessAt && Date.now() - src.lastSuccessAt.getTime() < 2 * 3_600_000) {
+    return { seen: 0, relevant: 0, new: 0, updated: 0, closed: 0, detailErrors: 0 };
+  }
   const adapter = ADAPTERS[src.kind];
   if (!adapter) throw new AppError("unsupported_source", `No adapter for ${src.kind}.`);
   const [run] = await db.insert(discoveryRuns).values({ sourceId, trigger }).returning();
@@ -192,7 +204,8 @@ export async function runSource(db: Db, sourceId: string, trigger: "scheduled" |
         closedAt: null,
       };
       if (prev) {
-        await db.update(jobs).set(values).where(eq(jobs.id, prev.id));
+        const { dedupeKey: _keep, ...updateValues } = values; // keep the original dedupe identity
+        await db.update(jobs).set(updateValues).where(eq(jobs.id, prev.id));
         result.updated++;
       } else {
         const ins = await db.insert(jobs).values(values).onConflictDoNothing().returning({ id: jobs.id });
@@ -206,7 +219,7 @@ export async function runSource(db: Db, sourceId: string, trigger: "scheduled" |
     }
 
     // Close postings that vanished. Keyword-searched boards only close after a week unseen.
-    const keywordBoard = src.kind === "workday" || src.kind === "successfactors";
+    const keywordBoard = src.kind === "workday" || src.kind === "successfactors" || AGGREGATORS.has(src.kind);
     const cutoff = keywordBoard ? new Date(Date.now() - 7 * 86_400_000) : started;
     const closed = await db
       .update(jobs)
