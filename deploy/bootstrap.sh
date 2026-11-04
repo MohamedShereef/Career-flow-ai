@@ -12,7 +12,7 @@ log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 if ! command -v docker >/dev/null 2>&1; then
   log "Installing Docker"
   curl -fsSL https://get.docker.com | sudo sh
-  sudo usermod -aG docker "$USER" || true
+  sudo usermod -aG docker "${USER:-ubuntu}" || true
 fi
 DOCKER="docker"; docker info >/dev/null 2>&1 || DOCKER="sudo docker"
 
