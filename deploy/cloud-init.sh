@@ -21,6 +21,8 @@ cat > /usr/local/bin/careerflow-update <<'SH'
 #!/bin/bash
 # Pull the latest main and redeploy only when it changed.
 set -euo pipefail
+exec 9>/var/lock/careerflow-update.lock
+flock -n 9 || exit 0   # another update is already running
 set -a; . /etc/careerflow.env; set +a
 cd /opt/careerflow
 git fetch --depth 1 origin main
