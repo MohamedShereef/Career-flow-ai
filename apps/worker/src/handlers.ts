@@ -42,9 +42,16 @@ export const handlers: Record<string, Handler> = {
     if (!ai.aiConfigured()) return { skipped: "AI not configured" };
     const users = await db.select({ id: applicantProfiles.userId, titles: applicantProfiles.preferredTitles }).from(applicantProfiles);
     const out: Record<string, unknown> = {};
+    // One user's problem (e.g. unreadable data) must not stop matching for everyone else.
     for (const u of users) {
       if (!u.titles.length) continue;
-      out[u.id] = await matching.evaluateJobsForUser(db, u.id);
+      try {
+        out[u.id] = await matching.evaluateJobsForUser(db, u.id);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/rate-limit|no credit|API key/i.test(msg)) throw err; // account-wide: retry the whole run later
+        out[u.id] = { error: msg.slice(0, 200) };
+      }
     }
     return out;
   },
