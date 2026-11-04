@@ -5,7 +5,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: Playwright's Chromium build doesn't support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -18,8 +19,8 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/careerflow_test
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - name: Typecheck
@@ -34,11 +35,11 @@ jobs:
           APP_ENCRYPTION_KEY: ${{ secrets.CI_ENCRYPTION_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
       - name: Browser smoke test (real Chromium)
         run: |
-          npx playwright-core install chromium
+          npx playwright-core install --with-deps chromium
           export APP_ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
           export APP_HASH_KEY=ci STORAGE_DRIVER=local ALLOW_LOCAL_STORAGE=true LOCAL_STORAGE_DIR=/tmp/cf
           npm run db:migrate
           (cd apps/web && npx next start -p 3000 &) 
           (cd apps/worker && PORT=8080 npx tsx src/main.ts &)
-          npx wait-on -t 60000 http://localhost:3000/api/health
+          for i in $(seq 1 60); do curl -sf http://localhost:3000/api/health && break; sleep 1; done
           CHROME_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())") npm run e2e
