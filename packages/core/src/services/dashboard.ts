@@ -1,5 +1,5 @@
 import { and, eq, gt, sql } from "drizzle-orm";
-import { applications, errorRecords, jobEvaluations, jobSources, workerHeartbeats } from "@careerflow/db";
+import { aiDecisions, applications, errorRecords, jobEvaluations, jobSources, workerHeartbeats } from "@careerflow/db";
 import type { Executor } from "../types";
 import { openQuestionCount } from "./answers";
 
@@ -65,12 +65,15 @@ export async function systemHealth(db: Executor) {
            count(*) filter (where status='dead' and finished_at > now() - interval '24 hours')::int as dead_24h
     from tasks`).then((r) => r.rows);
   const now = Date.now();
+  // The key being present isn't enough: report what the last real AI call said.
+  const [lastAi] = await db.select({ status: aiDecisions.status, error: aiDecisions.error, at: aiDecisions.createdAt }).from(aiDecisions).where(sql`${aiDecisions.status} <> 'unavailable'`).orderBy(sql`${aiDecisions.createdAt} desc`).limit(1);
+  const aiState = !process.env.OPENAI_API_KEY ? "missing" : lastAi?.status === "error" && /ai_auth|rejected/i.test(lastAi.error ?? "") ? "rejected" : lastAi?.status === "error" && /rate|credit/i.test(lastAi.error ?? "") ? "no_credit" : lastAi?.status === "ok" ? "working" : "untested";
   return {
     database: { ok: true, latencyMs: dbLatencyMs },
     workers: workers.map((w) => ({ ...w, online: now - w.lastSeenAt.getTime() < 90_000 })),
     workerOnline: workers.some((w) => now - w.lastSeenAt.getTime() < 90_000),
     sources,
     queue: queue ?? { queued: 0, running: 0, blocked: 0, dead_24h: 0 },
-    ai: { configured: !!process.env.OPENAI_API_KEY },
+    ai: { configured: !!process.env.OPENAI_API_KEY, state: aiState, lastError: lastAi?.status === "error" ? lastAi.error : null },
   };
 }

@@ -103,9 +103,9 @@ Rules:
 export async function extractFromCv(db: Db, userId: string, documentId: string) {
   const { doc, bytes } = await getDocumentForDownload(db, userId, documentId);
   if (doc.kind !== "cv_original") throw new AppError("not_cv", "Choose one of your uploaded CVs.");
-  const text = await extractDocumentText(bytes, doc.mimeType);
   const [row] = await db.insert(cvExtractions).values({ userId, documentId, status: "pending" }).returning();
   try {
+    const text = await extractDocumentText(bytes, doc.mimeType);
     const { data, decisionId } = await structured<ExtractedCv>({
       db,
       userId,
@@ -124,7 +124,8 @@ export async function extractFromCv(db: Db, userId: string, documentId: string) 
     await db.update(cvExtractions).set({ status: "extracted", extracted: data, aiDecisionId: decisionId }).where(eq(cvExtractions.id, row!.id));
     return { id: row!.id, data };
   } catch (err) {
-    await db.update(cvExtractions).set({ status: "failed" }).where(eq(cvExtractions.id, row!.id));
+    const reason = err instanceof AppError ? err.userMessage : err instanceof Error ? err.message : String(err);
+    await db.update(cvExtractions).set({ status: "failed", extracted: { error: reason.slice(0, 300) } }).where(eq(cvExtractions.id, row!.id));
     throw err;
   }
 }
@@ -136,7 +137,7 @@ export async function getExtraction(db: Db, userId: string, id: string) {
     .innerJoin(documents, eq(documents.id, cvExtractions.documentId))
     .where(and(eq(cvExtractions.id, id), eq(cvExtractions.userId, userId)));
   if (!row) throw notFound("CV import");
-  return { ...row.x, filename: row.filename, data: row.x.extracted as ExtractedCv | null };
+  return { ...row.x, filename: row.filename, data: row.x.status === "failed" ? null : (row.x.extracted as ExtractedCv | null) };
 }
 
 export async function latestExtraction(db: Db, userId: string) {

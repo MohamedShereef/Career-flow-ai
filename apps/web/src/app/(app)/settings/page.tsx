@@ -137,7 +137,8 @@ async function Diagnostics() {
       <Card title="Services">
         <ul className="space-y-2 text-sm">
           <li className="flex justify-between"><span>Database</span><Badge tone="good">OK · {h.database.latencyMs} ms</Badge></li>
-          <li className="flex justify-between"><span>AI key</span><Badge tone={h.ai.configured ? "good" : "attention"}>{h.ai.configured ? "Configured" : "Missing"}</Badge></li>
+          <li className="flex justify-between"><span>AI key</span><Badge tone={h.ai.state === "working" ? "good" : h.ai.state === "untested" ? "neutral" : "bad"}>{h.ai.state}</Badge></li>
+          {h.ai.lastError && <li className="text-xs text-bad">Last AI error: {h.ai.lastError}</li>}
           <li className="flex justify-between"><span>Queued tasks</span><Badge>{h.queue.queued}</Badge></li>
           <li className="flex justify-between"><span>Running tasks</span><Badge>{h.queue.running}</Badge></li>
           <li className="flex justify-between"><span>Blocked (need review)</span><Badge tone={h.queue.blocked ? "attention" : "neutral"}>{h.queue.blocked}</Badge></li>

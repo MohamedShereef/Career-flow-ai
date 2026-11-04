@@ -103,7 +103,7 @@ export default async function Home() {
             <ul className="space-y-2 text-sm">
               <li className="flex justify-between"><span>Database</span><Badge tone="good">{health.database.latencyMs} ms</Badge></li>
               <li className="flex justify-between"><span>Background worker</span><Badge tone={health.workerOnline ? "good" : "attention"}>{health.workerOnline ? "Online" : "Offline"}</Badge></li>
-              <li className="flex justify-between"><span>AI connection</span><Badge tone={health.ai.configured ? "good" : "attention"}>{health.ai.configured ? "Configured" : "Not configured"}</Badge></li>
+              <li className="flex justify-between"><span>AI connection</span><Badge tone={health.ai.state === "working" ? "good" : health.ai.state === "untested" ? "neutral" : "bad"}>{{ working: "Working", untested: "Key set (untested)", missing: "No key", rejected: "Key rejected by OpenAI", no_credit: "No credit / rate-limited" }[health.ai.state]}</Badge></li>
               <li className="flex justify-between"><span>Tasks needing review</span><Badge tone={health.queue.blocked ? "attention" : "neutral"}>{health.queue.blocked}</Badge></li>
             </ul>
           </Card>
