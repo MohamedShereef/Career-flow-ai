@@ -1,0 +1,5 @@
+# Automatic HTTPS (Let's Encrypt). SITE_ADDRESS is a domain, or <server-ip>.sslip.io if you don't own one.
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}

@@ -20,7 +20,8 @@
     "test": "vitest run",
     "lint": "npm run typecheck",
     "keys": "node scripts/gen-keys.mjs",
-    "e2e": "node test/e2e/smoke.mjs"
+    "e2e": "node test/e2e/smoke.mjs",
+    "admin": "npm run admin -w @careerflow/worker --"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

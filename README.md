@@ -62,26 +62,41 @@ npm run e2e       # real-browser smoke test against a running app (BASE_URL, CHR
 
 ## Deploy
 
-1. **Neon:** create a project and copy the **pooled** connection string (`sslmode=require`).
-2. **Keys:** run `npm run keys` once. Use the **same** values on Vercel and Railway, and keep
-   a copy in a password manager. If `APP_ENCRYPTION_KEY` is lost, encrypted data can't be read.
-3. **Cloudflare R2** (or any S3-compatible bucket): create a private bucket and an API token.
-   Set the `S3_*` variables and `S3_SSE=off`.
-4. **Resend:** create an API key for password-reset emails (`RESEND_API_KEY`, `MAIL_FROM`).
-5. **GitHub:** push this repository.
-6. **Railway (worker):** New Project → Deploy from GitHub repo → root directory `/`.
-   `railway.json` already sets migrations as a pre-deploy step, the start command and the
-   `/health` check. Add the env vars: `DATABASE_URL`, `APP_ENCRYPTION_KEY`, `APP_HASH_KEY`,
-   the `S3_*` vars, and later `OPENAI_API_KEY`.
-7. **Vercel (web):** Import the repo → **Root Directory `apps/web`**. Add every variable from
-   `.env.example` under "Web" plus the shared ones. Set `APP_URL` to the production URL.
-   Keep `SIGNUP_MODE=closed` with your email in `SIGNUP_ALLOWLIST` until you want other users.
-8. Open `https://<your-app>/api/health`. It should show `database.ok: true` and
-   `workerOnline: true`.
+### Recommended: one free server (Oracle Cloud Always Free)
 
-Rollback: Vercel → Deployments → *Promote* a previous build. Railway → Deployments → *Redeploy*
-a previous build. Migrations only add things in this release, so an older build keeps working
-against the newer schema.
+Postgres, web, worker, HTTPS (Caddy) and nightly backups all run on one machine through
+`deploy/docker-compose.yml`. The Always Free ARM server has more memory than the
+Chromium-based worker in later releases needs, and nothing here bills per request.
+
+1. **Create the server:** Oracle Cloud → Compute → Instances → Create.
+   - Image: **Ubuntu 24.04**. Shape: **VM.Standard.A1.Flex** (marked *Always Free-eligible*), 2 OCPU / 12 GB.
+   - Under "Add SSH keys" choose **Generate a key pair** and **download the private key**.
+   - If you get "Out of capacity", try another availability domain or try again later.
+2. **Open ports 80 and 443:** Instance → Subnet → Security List → Add Ingress Rules:
+   source `0.0.0.0/0`, TCP, destination ports `80,443`. The OS firewall is opened by the bootstrap script.
+3. **GitHub secrets:** repo → Settings → Secrets and variables → Actions → New repository secret:
+   - `DEPLOY_HOST`: the server's public IP
+   - `DEPLOY_SSH_KEY`: the full contents of the downloaded private key file
+   - `OWNER_EMAIL`: the only email allowed to sign up
+   - `OPENAI_API_KEY`: optional now, needed from release 2
+4. **Deploy:** Actions → **Deploy** → *Run workflow*. After that, every push to `main` that
+   passes CI deploys itself.
+5. Open `https://<server-ip>.sslip.io` (free HTTPS, no domain needed) and sign up with `OWNER_EMAIL`.
+
+Notes:
+- Secrets (`APP_ENCRYPTION_KEY`, the DB password) are **generated on the server** in `deploy/.env`
+  and never leave it. Keep a copy: `ssh ubuntu@<ip> cat ~/careerflow/deploy/.env`.
+- Forgot your password and email isn't set up? `ssh ubuntu@<ip> ~/careerflow/deploy/admin.sh reset-password <email>`
+  prints a one-time link.
+- Backups: nightly `pg_dump` into the `backups` volume (14 kept).
+- Logs: `cd ~/careerflow/deploy && docker compose logs -f web worker`.
+- Rollback: re-run the Deploy workflow on an earlier commit.
+
+### Alternative: Vercel + Railway + Neon
+
+The same code runs on managed services: Vercel for `apps/web` (Root Directory `apps/web`),
+Railway for the worker (`railway.json`), and Neon for Postgres. Set the variables from
+`.env.example` on each one.
 
 ## Tested vs. not tested (release 1)
 
@@ -103,8 +118,8 @@ against the newer schema.
   redirect, wrong password, sign in → a second user gets 404 on the first user's CV.
 
 **Not tested yet:**
-- An actual deployment to Vercel, Railway, Neon and R2. The code targets them; the build
-  environment here cannot reach those services.
+- A live deployment. The Docker image build and the compose file are checked in CI. The
+  bootstrap script and the Oracle setup are run for the first time on your server.
 - Sending a real email through Resend (unit tests cover the reset logic; delivery is untested).
 - Anything from later releases: discovery, OpenAI decisions, CV generation, ATS automation, Gmail.
 

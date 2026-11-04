@@ -1,4 +1,5 @@
 import "server-only";
+import { AppError } from "@careerflow/core";
 
 /**
  * Transactional email (password reset). Uses Resend's HTTP API when
@@ -8,7 +9,9 @@ import "server-only";
 export async function sendMail(to: string, subject: string, text: string) {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
-    if (process.env.NODE_ENV === "production") throw new Error("Email is not configured (RESEND_API_KEY).");
+    if (process.env.NODE_ENV === "production") {
+      throw new AppError("email_not_configured", "Password-reset email isn't set up on this server yet. The admin can create a reset link from the server.", 503);
+    }
     console.info(`[dev-mail] to=${to} subject=${subject}\n${text}`);
     return;
   }
@@ -18,6 +21,11 @@ export async function sendMail(to: string, subject: string, text: string) {
     body: JSON.stringify({ from: process.env.MAIL_FROM ?? "CareerFlow AI <no-reply@careerflow.app>", to, subject, text }),
   });
   if (!res.ok) throw new Error(`Email provider responded ${res.status}`);
+}
+
+/** True when password-reset emails can actually be delivered. */
+export function mailConfigured() {
+  return !!process.env.RESEND_API_KEY || process.env.NODE_ENV !== "production";
 }
 
 export function appUrl() {

@@ -43,3 +43,14 @@ jobs:
           (cd apps/worker && PORT=8080 npx tsx src/main.ts &)
           for i in $(seq 1 60); do curl -sf http://localhost:3000/api/health && break; sleep 1; done
           CHROME_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())") npm run e2e
+
+  docker:
+    # Proves the production image builds (the server builds the same Dockerfile).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -f deploy/Dockerfile -t careerflow-app:ci .
+      - name: Compose file is valid
+        run: |
+          printf 'SITE_ADDRESS=example.sslip.io\nPOSTGRES_PASSWORD=x\n' > deploy/.env
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env config -q

@@ -1,0 +1,43 @@
+name: Deploy
+# Ships main to your server after CI passes (or on demand from the Actions tab).
+# Needs repository secrets: DEPLOY_HOST (server IP), DEPLOY_SSH_KEY (private key).
+# Optional: DEPLOY_USER (default ubuntu), OWNER_EMAIL, OPENAI_API_KEY, SITE_ADDRESS.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency: { group: deploy, cancel-in-progress: false }
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      HOST: ${{ secrets.DEPLOY_HOST }}
+      USER_NAME: ${{ secrets.DEPLOY_USER || 'ubuntu' }}
+    steps:
+      - name: Skip when no server is configured
+        if: ${{ env.HOST == '' }}
+        run: echo "::notice::DEPLOY_HOST secret not set — skipping deploy." 
+      - uses: actions/checkout@v5
+        if: ${{ env.HOST != '' }}
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Ship code and run bootstrap
+        if: ${{ env.HOST != '' }}
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SITE_ADDRESS: ${{ secrets.SITE_ADDRESS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id && chmod 600 ~/.ssh/id
+          ssh-keyscan -T 15 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSH="ssh -i $HOME/.ssh/id -o ServerAliveInterval=30 $USER_NAME@$HOST"
+          # Code only: no .git, no secrets, no build output. deploy/.env on the server is preserved.
+          tar --exclude=.git --exclude=node_modules --exclude=.next -czf - . | $SSH 'mkdir -p ~/careerflow && tar -xzf - -C ~/careerflow'
+          $SSH "cd ~/careerflow && OWNER_EMAIL='$OWNER_EMAIL' OPENAI_API_KEY='$OPENAI_API_KEY' SITE_ADDRESS='$SITE_ADDRESS' bash deploy/bootstrap.sh"

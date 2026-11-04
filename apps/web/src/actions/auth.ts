@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { AppError, auth } from "@careerflow/core";
 import { db } from "@/lib/db";
-import { appUrl, sendMail } from "@/lib/mailer";
+import { appUrl, mailConfigured, sendMail } from "@/lib/mailer";
 import { clearSessionCookie, requestContext, requireUser, sessionToken, setSessionCookie } from "@/lib/session";
 import { runAction, str, type ActionState } from "@/lib/action";
 
@@ -45,6 +45,10 @@ export async function logoutAction() {
 
 export async function forgotPasswordAction(_: ActionState, fd: FormData): Promise<ActionState> {
   return runAction(async () => {
+    // Checked before the lookup so the response never reveals whether an account exists.
+    if (!mailConfigured()) {
+      throw new AppError("email_not_configured", "Password-reset email isn't set up on this server yet. The admin can create a reset link from the server.", 503);
+    }
     const r = await auth.requestPasswordReset(db(), str(fd, "email"), await requestContext());
     if (r) {
       const link = `${appUrl()}/reset-password?token=${encodeURIComponent(r.token)}`;
