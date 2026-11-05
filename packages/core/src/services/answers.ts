@@ -117,6 +117,7 @@ export interface FoundAnswer {
   answerType: string;
   sensitivity: Sensitivity;
   requiresReview: boolean;
+  updatedAt: Date;
 }
 
 export async function findAnswer(
@@ -149,6 +150,7 @@ export async function findAnswer(
     answerType: match.answerType,
     sensitivity: match.sensitivity,
     requiresReview: match.requiresReview,
+    updatedAt: match.updatedAt,
   };
 }
 

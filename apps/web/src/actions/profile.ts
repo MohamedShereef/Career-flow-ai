@@ -216,7 +216,7 @@ export async function answerQuestionAction(_: ActionState, fd: FormData): Promis
   const user = await requireUser();
   return runAction(async () => {
     const r = await answers.answerPendingQuestion(db(), user.id, str(fd, "id"), {
-      answer: str(fd, "answer"),
+      answer: str(fd, "answerText").trim() || str(fd, "answer"),
       scope: (str(fd, "scope") || "global") as "global" | "employer",
     });
     return done(

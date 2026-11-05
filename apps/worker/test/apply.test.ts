@@ -299,6 +299,7 @@ run("auto-apply in a real browser", () => {
     await answers.saveAnswer(db, user.id, { questionText: "Highest Education Level", answer: "Bachelor's Degree", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Seniority Level", answer: "Senior", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Nationality", answer: "Egyptian", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Institution Country", answer: "Egypt", scope: "global" }); // education facts are asked once, never guessed
     let rescues = 0;
     ai.setAiTransportForTests(async (req) => {
       if (req.schemaName === "field_rescue") {
@@ -341,6 +342,7 @@ run("auto-apply in a real browser", () => {
     const db = testDb();
     const { user, job } = await setup("/implicit");
     await answers.saveAnswer(db, user.id, { questionText: "Nationality", answer: "Egyptian", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Institution Country", answer: "Egypt", scope: "global" }); // education facts are asked once, never guessed
     ai.setAiTransportForTests(async (req) => {
       if (req.schemaName === "field_rescue") {
         const step = (o: Record<string, unknown>) => ({ action: null, key: null, selector: null, chars: null, ms: null, ...o });

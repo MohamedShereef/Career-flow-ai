@@ -110,6 +110,15 @@ export const EXTRACT = String.raw`(() => {
     const key = mkKey(type, el.name || el.id || raw);
     el.setAttribute("data-cf-key", key);
     const f = { key, label: strip(raw), type, required: isReq(el, raw) };
+    // What the field itself says it accepts.
+    const hint = [
+      el.getAttribute("placeholder") && !/^(no selection|select|choose)/i.test(el.getAttribute("placeholder")) ? "e.g. " + el.getAttribute("placeholder") : "",
+      t === "number" || el.getAttribute("inputmode") === "decimal" || el.getAttribute("inputmode") === "numeric" ? "a number" : "",
+      el.getAttribute("min") != null && el.getAttribute("max") != null ? "between " + el.getAttribute("min") + " and " + el.getAttribute("max") : "",
+      el.getAttribute("maxlength") && Number(el.getAttribute("maxlength")) < 200 ? "up to " + el.getAttribute("maxlength") + " characters" : "",
+      t === "date" ? "a date" : "",
+    ].filter(Boolean).join(", ");
+    if (hint) f.hint = hint;
     if (type === "select") f.options = [...el.options].filter((o) => o.value !== "" && !/^(select|choose|please select|--)/i.test(o.text.trim())).map((o) => clean(o.text));
     if (type === "file") f.accept = el.getAttribute("accept");
     fields.push(f);

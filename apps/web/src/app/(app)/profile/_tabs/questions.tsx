@@ -27,11 +27,14 @@ export async function QuestionsTab({ userId }: { userId: string }) {
               {q.sensitivity !== "normal" && <Badge tone="attention">Sensitive</Badge>}
             </div>
           </div>
-          {q.context && <p className="mt-2 text-sm text-muted">{q.context}</p>}
+          {q.context && <p className={`mt-2 text-sm ${/rejected/.test(q.context) ? "rounded-lg bg-attention-50 p-2 text-attention" : "text-muted"}`}>{q.context}</p>}
           <ActionForm action={answerQuestionAction} className="mt-4 space-y-3">
             <input type="hidden" name="id" value={q.id} />
             {q.options?.length ? (
-              <Select label="Your answer" name="answer" options={q.options.map((o) => [o, o] as [string, string])} />
+              <>
+                <Select label="Your answer (the site's options)" name="answer" options={q.options.map((o) => [o, o] as [string, string])} />
+                {q.options.length >= 10 && <TextArea label="Not in the list? Type it exactly as the site writes it" name="answerText" rows={1} />}
+              </>
             ) : (
               <TextArea label="Your answer" name="answer" required rows={2} />
             )}

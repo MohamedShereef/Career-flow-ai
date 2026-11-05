@@ -149,3 +149,44 @@ describe("interrupted submit", () => {
     expect(await autoapply.reconcileInterruptedSubmits(db)).toBe(0);
   });
 });
+
+describe("answers the employer's form rejected", () => {
+  it("asks again with the site's message and format, then uses the new answer", async () => {
+    const { pendingQuestions } = await import("@careerflow/db");
+    const { and, eq } = await import("drizzle-orm");
+    const { user } = await makeUser();
+    const db = testDb();
+    await answers.saveAnswer(db, user.id, { questionText: "G.P.A", answer: "Very Good", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "National ID Card Type", answer: "Passport", scope: "global" });
+    const snap: autoapply.FormSnapshot = {
+      url: "https://x", atsKind: "successfactors", pageTitle: "", blockers: [],
+      fields: [
+        { key: "t:gpa", label: "G.P.A", type: "text", required: true },
+        { key: "c:idtype", label: "National ID Card Type", type: "combobox", required: true, options: ["Iqama", "National ID", "Passport"] },
+      ],
+    };
+    const base = ctx(user.id);
+    // "Very Good" isn't a number, so the GPA is asked even before any rejection.
+    let plan = await autoapply.planAnswers(db, base, snap);
+    expect(plan.missing.map((f) => f.key)).toEqual(["t:gpa"]);
+
+    // The site rejected the ID type last time: ask again (with its message) even though an answer is saved.
+    const rejectedCtx = { ...base, rejected: { "national id card type": { message: "Invalid value", at: new Date().toISOString() } } };
+    plan = await autoapply.planAnswers(db, rejectedCtx, snap);
+    expect(plan.missing.map((f) => f.key).sort()).toEqual(["c:idtype", "t:gpa"]);
+    await autoapply.askMissing(db, rejectedCtx, plan.missing);
+    const open = await db.select().from(pendingQuestions).where(and(eq(pendingQuestions.userId, user.id), eq(pendingQuestions.status, "open")));
+    const idq = open.find((q) => q.questionText === "National ID Card Type")!;
+    expect(idq.context).toContain("The site rejected the previous answer: “Invalid value”");
+    expect(idq.options).toEqual(["Iqama", "National ID", "Passport"]);
+    expect(open.find((q) => q.questionText === "G.P.A")!.context).toContain("expects a number");
+
+    // A new answer given after the rejection is used.
+    await new Promise((r) => setTimeout(r, 10));
+    await answers.answerPendingQuestion(db, user.id, idq.id, { answer: "Iqama", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "G.P.A", answer: "3.2", scope: "global" });
+    plan = await autoapply.planAnswers(db, rejectedCtx, snap);
+    expect(plan.missing).toHaveLength(0);
+    expect(Object.fromEntries(plan.answers.map((a) => [a.key, a.value]))).toEqual({ "t:gpa": { kind: "text", value: "3.2" }, "c:idtype": { kind: "text", value: "Iqama" } });
+  });
+});

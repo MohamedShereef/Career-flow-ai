@@ -36,7 +36,7 @@ import { js, structured } from "../ai";
 import { decrypt, encrypt, sha256 } from "../crypto";
 import { AppError, notFound } from "../errors";
 import { numbersIn } from "../fact-guard";
-import { normalizeQuestion } from "../normalize";
+import { employerKey as employerKeyOf, normalizeQuestion } from "../normalize";
 import { getStorage } from "../storage";
 import type { Db, Executor } from "../types";
 import * as answersSvc from "./answers";
@@ -58,6 +58,8 @@ export interface FormField {
   required: boolean;
   options?: string[];
   accept?: string | null;
+  /** What the field says it accepts ("a number, between 0 and 4", "e.g. 3.5"). */
+  hint?: string;
 }
 
 export type Blocker = {
@@ -99,7 +101,10 @@ export interface Plan {
 // ───────────────────────── Question rules ─────────────────────────
 
 /** Never answered by AI and never guessed: asked once in the inbox, then reused. */
-const ASK_ONCE = /\b(authori[sz]ed|authori[sz]ation|eligible to work|right to work|sponsor|visa|work permit|iqama|transferable|relocat|notice period|start date|available to start|consent|agree|acknowledge|privacy|terms|gdpr|data protection|reference|referee|how did you hear|source|referred)\b/;
+const ASK_ONCE = /\b(authori[sz]ed|authori[sz]ation|eligible to work|right to work|sponsor|visa|work permit|iqama|transferable|relocat|notice period|start date|available to start|consent|agree|acknowledge|privacy|terms|gdpr|data protection|reference|referee|how did you hear|source|referred|institute|institution|university|college|school|graduation|graduated|gpa|g p a|cgpa|grade|out of|major|field of study|specialization|national id|id card|id type|id number)\b/;
+
+/** Fields that only accept a number. */
+const isNumeric = (f: FormField) => f.type === "number" || /\ba number\b/.test(f.hint ?? "") || /\b(g ?p ?a|cgpa|grade point|out of|percentage|percent|score)\b/.test(norm(f.label));
 
 const norm = (s: string) => normalizeQuestion(s.replace(/\*/g, " "));
 
@@ -119,6 +124,10 @@ function bestOption(options: string[] | undefined, wanted: string): string | nul
 function asValue(field: FormField, raw: string): AnswerValue | null {
   const v = raw.trim();
   if (!v) return null;
+  if (isNumeric(field) && (field.type === "text" || field.type === "number")) {
+    const n = v.replace(/,/g, ".").match(/^\d+(\.\d+)?$/);
+    return n ? { kind: "text", value: n[0] } : null; // "Very Good" is not a GPA
+  }
   if (field.type === "checkbox") {
     if (/^(yes|true|y|i agree|agree|نعم)$/i.test(v)) return { kind: "bool", value: true };
     if (/^(no|false|n|لا)$/i.test(v)) return { kind: "bool", value: false };
@@ -141,6 +150,8 @@ const isCoverLetter = (l: string) => /\bcover\b|\bmotivation letter\b/.test(l);
 // ───────────────────────── Planning answers ─────────────────────────
 
 interface PlanContext {
+  /** Fields the employer's form rejected last time (by lower-cased label): ask the user again, with the site's message. */
+  rejected?: Record<string, { message: string; at: string }>;
   userId: string;
   userEmail: string;
   applicationId: string;
@@ -228,8 +239,14 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
       continue;
     }
 
+    // 0) the employer's form rejected this field last time: only an answer you gave since then counts
+    const rejected = ctx.rejected?.[f.label.toLowerCase()];
     // 1) the user's own saved answer for this exact question (employer-specific first)
     const saved = await answersSvc.findAnswer(db, ctx.userId, f.label, ctx.job.companyName, { markUsed: true });
+    if (rejected && (!saved || saved.updatedAt < new Date(rejected.at))) {
+      missing.push({ ...f, required: true });
+      continue;
+    }
     if (saved) {
       const v = asValue(f, saved.answer);
       if (v) {
@@ -240,7 +257,7 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
 
     // 2) a standard field filled from the profile
     const rule = PROFILE_RULES.find(([re, , kind]) => re.test(l) && !(kind === "personal" && ABOUT_SOMETHING_ELSE.test(l)));
-    if (rule && rule[1]) {
+    if (rule && rule[1] && !rejected) {
       const v = asValue(f, rule[1]);
       if (v) {
         answers.push({ key: f.key, label: f.label, type: f.type, value: v, source: "profile", needsReview: false });
@@ -307,8 +324,33 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
 }
 
 /** File each unanswered required question in the inbox (deduplicated). */
+/** What the employer's form accepts for a field, in plain words (shown with the question). */
+export function acceptsText(f: FormField, rejectedMessage?: string) {
+  const parts = [
+    rejectedMessage ? `The site rejected the previous answer: “${rejectedMessage}”.` : "",
+    f.options?.length ? `Choose one of the site's options${f.options.length >= 10 ? " (the site's list may be longer — type the exact wording if yours isn't shown)" : ""}.` : "",
+    isNumeric(f) ? `The site expects a number${f.hint && /between/.test(f.hint) ? ` (${f.hint.match(/between [^,]+/)![0]})` : ""}, e.g. 3.2 — not words like “Very Good”.` : "",
+    f.hint && !isNumeric(f) ? `The field says: ${f.hint}.` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
 export async function askMissing(db: Db, ctx: PlanContext, missing: FormField[]) {
   for (const f of missing) {
+    let accepts = acceptsText(f, ctx.rejected?.[f.label.toLowerCase()]?.message);
+    // A saved answer that doesn't fit this form (e.g. "Very Good" where a number is required) or that the
+    // site rejected: ask again, saying why.
+    const saved = await answersSvc.findAnswer(db, ctx.userId, f.label, ctx.job.companyName);
+    if (saved && !ctx.rejected?.[f.label.toLowerCase()]) accepts = `Your saved answer “${saved.answer.slice(0, 60)}” doesn't fit this form. ${accepts}`.trim();
+    if (ctx.rejected?.[f.label.toLowerCase()] || saved) {
+      await db.execute(sql`UPDATE pending_questions SET status = 'dismissed' WHERE user_id = ${ctx.userId} AND status = 'open' AND question_hash = ${answersSvc.questionHash(f.label)}`);
+      await db.insert(pendingQuestions).values({
+        userId: ctx.userId, applicationId: ctx.applicationId, jobId: ctx.job.id, employerName: ctx.job.companyName, employerKey: employerKeyOf(ctx.job.companyName), jobTitle: ctx.job.title,
+        questionText: f.label, questionHash: answersSvc.questionHash(f.label), fieldType: f.type, options: f.options?.length ? f.options : null, required: true,
+        context: `${accepts} Asked by ${ctx.job.companyName} for ${ctx.job.title}.`.trim(), sensitivity: answersSvc.classifySensitivity(f.label),
+      }).onConflictDoNothing();
+      continue;
+    }
     await answersSvc.resolveOrAsk(db, ctx.userId, {
       questionText: f.label,
       employerName: ctx.job.companyName,
@@ -318,7 +360,7 @@ export async function askMissing(db: Db, ctx: PlanContext, missing: FormField[])
       fieldType: f.type,
       options: f.options ?? null,
       required: true,
-      context: `Asked by ${ctx.job.companyName} for ${ctx.job.title}`,
+      context: `${accepts ? `${accepts} ` : ""}Asked by ${ctx.job.companyName} for ${ctx.job.title}.`,
     });
   }
 }
@@ -457,7 +499,8 @@ export async function startAutoApply(db: Db, userId: string, input: { jobId: str
   const ats = atsFromUrl(applyUrl ?? job.applyUrl);
   // Keep what earlier attempts learned about this employer's form.
   const prevMust = (prev?.cp as { mustFill?: string[] } | null)?.mustFill;
-  const cpData = { tailoringId: t.id, origin: input.origin ?? "user", ats, ...(applyUrl ? { applyUrl } : {}), ...(prevMust?.length ? { mustFill: prevMust } : {}) };
+  const prevRejected = (prev?.cp as { rejected?: Record<string, unknown> } | null)?.rejected;
+  const cpData = { tailoringId: t.id, origin: input.origin ?? "user", ats, ...(applyUrl ? { applyUrl } : {}), ...(prevMust?.length ? { mustFill: prevMust } : {}), ...(prevRejected ? { rejected: prevRejected } : {}) };
   const [app] = await db
     .insert(applications)
     .values({ userId, jobId: job.id, employerKey: job.employerKey, status: "processing", tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "queued_prepare", checkpointData: cpData })
@@ -486,7 +529,9 @@ export async function loadContext(db: Db, applicationId: string) {
   const [t] = tailoringId ? await db.select().from(cvTailorings).where(eq(cvTailorings.id, tailoringId)) : [];
   const [user] = await db.execute(sql`SELECT email FROM users WHERE id = ${row.a.userId}`).then((r) => r.rows as Array<{ email: string }>);
   const letter = (t?.content as { coverLetter?: string | null } | undefined)?.coverLetter ?? null;
+  const rejected = (row.a.checkpointData as { rejected?: PlanContext["rejected"] } | null)?.rejected;
   const ctx: PlanContext = {
+    rejected,
     userId: row.a.userId,
     userEmail: user?.email ?? "",
     applicationId,
@@ -709,7 +754,7 @@ export async function recordOutcome(
       await tx.update(submissionLedger).set({ state: "abandoned", updatedAt: now }).where(ledgerWhere);
       await tx.update(approvals).set({ invalidatedAt: now, invalidatedReason: "form_rejected" }).where(eq(approvals.id, input.approvalId));
       const errs = [...new Set(input.errors ?? [])];
-      const msg = `The employer's form didn't accept the application${errs.length ? `: ${errs.slice(0, 4).join("; ")}` : ""}. Nothing was sent. Press “Try automatic again” — CareerFlow now treats these fields as required and will ask you for anything it can't answer.`;
+      const msg = `The employer's form didn't accept the application${errs.length ? `: ${errs.slice(0, 4).join("; ")}` : ""}. Nothing was sent. CareerFlow is preparing it again and will ask you in Questions for these fields, showing what the site accepts.`;
       const [err] = await tx
         .insert(errorRecords)
         .values({ userId: app.userId, applicationId: app.id, stage: "submit", category: "readback_mismatch", rootCauseKey: `form_rejected:${app.employerKey}`, userMessage: msg, technicalDetail: { errors: errs, invalid: input.invalid ?? [], url: input.url, ...(shot ? { screenshotDocumentId: shot.id } : {}) } })
@@ -718,8 +763,15 @@ export async function recordOutcome(
       const cp = (a0: unknown) => (a0 as Record<string, unknown> | null) ?? {};
       const prevMust = (cp(app.checkpointData).mustFill as string[] | undefined) ?? [];
       const mustFill = [...new Set([...prevMust, ...(input.invalid ?? []).flatMap((f) => [f.key ? `key:${f.key}` : "", f.label ? `label:${f.label.toLowerCase()}` : ""]).filter(Boolean)])];
-      await tx.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "form_rejected", checkpointData: { ...cp(app.checkpointData), mustFill }, lastErrorId: err!.id, updatedAt: now }).where(eq(applications.id, app.id));
+      const prevRejected = (cp(app.checkpointData).rejected as Record<string, { message: string; at: string }> | undefined) ?? {};
+      const rejected = { ...prevRejected, ...Object.fromEntries((input.invalid ?? []).filter((f) => f.label).map((f) => [f.label.toLowerCase(), { message: f.message || "required / invalid", at: now.toISOString() }])) };
+      await tx.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "form_rejected", checkpointData: { ...cp(app.checkpointData), mustFill, rejected }, lastErrorId: err!.id, updatedAt: now }).where(eq(applications.id, app.id));
       await event(tx, app.userId, app.id, "error", "submit", msg, shot ? { screenshotDocumentId: shot.id, invalid: input.invalid ?? [] } : { invalid: input.invalid ?? [] });
+      // Prepare again right away so the questions reach the user now (it still waits for approval before sending).
+      if ((input.invalid ?? []).length) {
+        await tx.update(applications).set({ status: "processing", checkpoint: "queued_prepare" }).where(eq(applications.id, app.id));
+        await queue.enqueue(tx, { kind: "application.prepare", userId: app.userId, payload: { applicationId: app.id }, dedupeKey: `apply:prepare:${app.id}`, runAt: new Date(Date.now() + 30_000), maxAttempts: 2, timeoutSeconds: 900 });
+      }
     } else {
       await tx.update(submissionLedger).set({ state: "uncertain", updatedAt: now }).where(ledgerWhere);
       await tx.update(approvals).set({ consumedAt: now }).where(eq(approvals.id, input.approvalId));

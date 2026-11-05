@@ -146,7 +146,7 @@ export async function signIn(page: Page, cred: Credentials): Promise<{ outcome: 
 async function readListboxOptions(form: Frame, page: Page, fields: FormSnapshot["fields"]) {
   const opts = async (scope: Frame | Page, popup: string) => ((await scope.evaluate(`${LISTBOX_OPTIONS}(${JSON.stringify(popup || null)})`).catch(() => [])) as string[]);
   for (const f of fields) {
-    if (f.type !== "listbox") continue;
+    if (f.type !== "listbox" && f.type !== "combobox") continue;
     const loc = form.locator(`[data-cf-key="${f.key.replace(/"/g, '\\"')}"]`).first();
     try {
       const popup = ((await form.evaluate(`${POPUP_ID}(${JSON.stringify(f.key)})`).catch(() => "")) as string) || "";
