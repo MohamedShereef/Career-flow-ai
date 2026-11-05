@@ -98,7 +98,9 @@ Rules:
 - Dates: convert to YYYY-MM. If only a year is given, use YYYY-01 and add a warning.
 - Mark a qualification "in_progress" if the CV says studying, pursuing, candidate, ongoing, or expected.
 - Highlights: only achievements that contain a concrete number or a clearly measurable outcome. Copy the figure exactly; do not convert currencies.
-- Skills: short noun phrases (tools, methods, domains) that appear in the CV.`;
+- Skills: short noun phrases (tools, methods, domains) that appear in the CV.
+- Warnings: only real problems the candidate must fix (overlapping jobs by more than a month, a figure that is unclear, a date that contradicts another).
+  Do NOT warn about: a year-only date, one job ending in the same month the next starts, "9+ years" stored as 9, or dates before today.`;
 
 export async function extractFromCv(db: Db, userId: string, documentId: string) {
   const { doc, bytes } = await getDocumentForDownload(db, userId, documentId);
@@ -114,7 +116,7 @@ export async function extractFromCv(db: Db, userId: string, documentId: string) 
       entityType: "document",
       entityId: documentId,
       inputSummary: `CV ${doc.filename}, ${text.length} chars`,
-      system: SYSTEM,
+      system: `${SYSTEM}\nToday's date is ${new Date().toISOString().slice(0, 10)}. Anything dated before today is in the past.`,
       user: `CV text:\n"""\n${text}\n"""`,
       schemaName: "cv_extraction",
       schema: SCHEMA,
@@ -158,6 +160,27 @@ export interface ImportSelection {
   highlights: number[];
 }
 
+/** "2017" → "2017-01", "2017-03-15" → "2017-03", anything else → null. */
+function ym(v: string | null | undefined): string | null {
+  const m = (v ?? "").trim().match(/^(\d{4})(?:-(\d{1,2}))?/);
+  if (!m) return null;
+  const month = Math.min(12, Math.max(1, Number(m[2] ?? 1)));
+  return `${m[1]}-${String(month).padStart(2, "0")}`;
+}
+function ymd(v: string | null | undefined): string | null {
+  const d = (v ?? "").trim().match(/^\d{4}-\d{2}-\d{2}$/) ? v!.trim() : null;
+  if (d) return d;
+  const m = ym(v);
+  return m ? `${m}-01` : null;
+}
+function linkedin(v: string | null): string | null {
+  if (!v) return null;
+  const m = v.replace(/\s+/g, "").match(/(?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\/[^\s,;]+/i);
+  if (!m) return null;
+  return /^https?:\/\//i.test(m[0]) ? m[0] : `https://${m[0]}`;
+}
+const cut = (v: string | null | undefined, n: number) => (v == null ? v : v.trim().slice(0, n));
+
 const PROFILE_FIELDS = ["fullName", "headline", "summary", "phone", "contactEmail", "linkedinUrl", "city", "nationality", "yearsExperience"] as const;
 
 export async function applyExtraction(db: Db, userId: string, id: string, sel: ImportSelection) {
@@ -172,20 +195,25 @@ export async function applyExtraction(db: Db, userId: string, id: string, sel: I
     headline: d.headline,
     summary: d.summary,
     phone: d.phone,
-    contactEmail: d.email,
-    linkedinUrl: d.linkedinUrl ? (/^https?:\/\//.test(d.linkedinUrl) ? d.linkedinUrl : `https://${d.linkedinUrl}`) : null,
-    city: d.city,
-    nationality: d.nationality,
+    contactEmail: d.email?.trim().toLowerCase() ?? null,
+    linkedinUrl: linkedin(d.linkedinUrl),
+    city: cut(d.city, 100),
+    nationality: cut(d.nationality, 80),
     yearsExperience: d.yearsExperience,
   };
-  const patch: Record<string, unknown> = {};
-  for (const f of PROFILE_FIELDS) if (sel.profileFields.includes(f) && fieldMap[f] != null && fieldMap[f] !== "") patch[f] = fieldMap[f];
-  if (Object.keys(patch).length) {
+  // One field at a time, so a single odd value never blocks the rest.
+  for (const f of PROFILE_FIELDS) {
+    if (!sel.profileFields.includes(f)) continue;
+    const v = fieldMap[f];
+    if (v == null || v === "") {
+      if (f === "linkedinUrl" && d.linkedinUrl) report.skipped.push(`LinkedIn: "${d.linkedinUrl.slice(0, 60)}" isn't a linkedin.com link — paste the full link in Personal details.`);
+      continue;
+    }
     try {
-      await profile.updateProfile(db, userId, patch);
-      report.profileFields = Object.keys(patch).length;
+      await profile.updateProfile(db, userId, { [f]: v });
+      report.profileFields++;
     } catch (err) {
-      report.skipped.push(`Profile details: ${err instanceof AppError ? err.userMessage : "invalid value"}`);
+      report.skipped.push(`${f}: ${err instanceof AppError ? err.userMessage : "invalid value"}`);
     }
   }
 
@@ -195,8 +223,16 @@ export async function applyExtraction(db: Db, userId: string, id: string, sel: I
     `${e.employer.trim().toLowerCase()}|${e.title.trim().toLowerCase()}|${(e.startDate ?? "").slice(0, 7)}`;
   const have = new Set(existing.map((e) => key(e)));
   for (const i of sel.experiences) {
-    const e = d.experiences[i];
-    if (!e) continue;
+    const raw = d.experiences[i];
+    if (!raw) continue;
+    const e = {
+      ...raw,
+      employer: cut(raw.employer, 150) ?? "",
+      title: cut(raw.title, 150) ?? "",
+      location: cut(raw.location, 120) ?? null,
+      startDate: ym(raw.startDate),
+      endDate: raw.isCurrent ? null : ym(raw.endDate),
+    };
     if (!e.startDate) {
       report.skipped.push(`${e.title} at ${e.employer}: the CV has no start date — add it manually.`);
       continue;
@@ -206,7 +242,7 @@ export async function applyExtraction(db: Db, userId: string, id: string, sel: I
       continue;
     }
     try {
-      await profile.upsertExperience(db, userId, { ...e, description: e.description.slice(0, 5000), endDate: e.isCurrent ? null : e.endDate });
+      await profile.upsertExperience(db, userId, { ...e, description: (e.description ?? "").slice(0, 5000) });
       have.add(key(e));
       report.experiences++;
     } catch (err) {
@@ -219,10 +255,11 @@ export async function applyExtraction(db: Db, userId: string, id: string, sel: I
     const q = d.qualifications[i];
     if (!q || existingQuals.has(q.name.trim().toLowerCase())) continue;
     try {
-      await profile.addQualification(db, userId, { ...q, obtainedOn: q.obtainedOn && /^\d{4}-\d{2}-\d{2}$/.test(q.obtainedOn) ? q.obtainedOn : null });
+      await profile.addQualification(db, userId, { ...q, name: q.name.trim().slice(0, 200), issuer: cut(q.issuer, 150) ?? null, obtainedOn: ymd(q.obtainedOn) });
+      existingQuals.add(q.name.trim().toLowerCase());
       report.qualifications++;
-    } catch {
-      report.skipped.push(`${q.name}: invalid details.`);
+    } catch (err) {
+      report.skipped.push(`${q.name}: ${err instanceof AppError ? err.userMessage : "invalid details"}.`);
     }
   }
 

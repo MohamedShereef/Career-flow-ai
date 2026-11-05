@@ -85,7 +85,10 @@ export async function getAssessment(db: Db, companyName: string) {
 export async function assessEmployer(db: Db, userId: string | null, companyName: string, context?: string) {
   const key = employerKey(companyName);
   const cached = await getAssessment(db, companyName);
-  if (cached && Date.now() - cached.assessedAt.getTime() < STALE_DAYS * 86_400_000) return cached;
+  const fresh = cached && Date.now() - cached.assessedAt.getTime() < STALE_DAYS * 86_400_000;
+  // A rule-only result was made while the AI wasn't connected — redo it once the AI works.
+  const upgradable = cached?.method === "rule" && !isPif(key) && aiConfigured() && !!userId;
+  if (cached && fresh && !upgradable) return cached;
 
   let a: AiEmployer = { employerType: "unknown", scale: "unknown", pifAffiliated: "unknown", summary: "Not assessed (AI not connected).", redFlags: [], confidence: 0 };
   let method: "ai" | "rule" = "rule";

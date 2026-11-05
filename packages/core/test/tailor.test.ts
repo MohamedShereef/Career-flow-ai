@@ -115,6 +115,46 @@ describe("CV import", () => {
   });
 });
 
+describe("CV import tolerance", () => {
+  it("saves good fields even when one is odd, and accepts year-only dates", async () => {
+    const { user } = await makeUser();
+    const db = testDb();
+    const doc = await documents.uploadDocument(db, user.id, { name: "cv.pdf", bytes: await renderCvPdf({ name: "A B", headline: "Buyer", contact: [], summary: "Procurement engineer with long experience in construction tenders, supplier negotiation and materials management across large projects in Saudi Arabia and the GCC region.", highlights: [], experiences: [{ title: "Procurement Engineer", employer: "El Seif", location: "Riyadh", dates: "Aug 2024 - Present", bullets: ["Ran MEP tenders and negotiated subcontracts"] }], qualifications: ["B.Sc. Engineering"], skills: ["Negotiation"] }) }, "cv_original");
+    let prompt = "";
+    setAiTransportForTests(async (req) => {
+      prompt = req.system;
+      return {
+        model: "test-model", inputTokens: 1, outputTokens: 1,
+        content: JSON.stringify({
+          fullName: "Mohamed Shereef", headline: "Senior Procurement Engineer", summary: null, email: " M@Example.com ", phone: "+966 5 1234 5678",
+          linkedinUrl: "LinkedIn: Mohamed Shereef", city: "Riyadh", nationality: null, yearsExperience: 9,
+          experiences: [
+            { employer: "El Seif", title: "Procurement Engineer", location: null, startDate: "2024-08-15", endDate: "Present", isCurrent: true, description: "x" },
+            { employer: "Al Fahd", title: "Buyer", location: null, startDate: "2023", endDate: "2024", isCurrent: false, description: "y" },
+          ],
+          qualifications: [{ kind: "degree", name: "B.Sc. Engineering", issuer: null, state: "held", obtainedOn: "2017" }],
+          skills: [], highlights: [], warnings: [],
+        }),
+      };
+    });
+    const x = await cvImport.extractFromCv(db, user.id, doc.id);
+    expect(prompt).toContain("Today's date is");
+    const r = await cvImport.applyExtraction(db, user.id, x.id, {
+      profileFields: ["fullName", "headline", "contactEmail", "phone", "linkedinUrl", "city", "yearsExperience"],
+      experiences: [0, 1], qualifications: [0], skills: [], highlights: [],
+    });
+    expect(r.profileFields).toBe(6);
+    expect(r.experiences).toBe(2);
+    expect(r.qualifications).toBe(1);
+    expect(r.skipped.join(" ")).toContain("LinkedIn");
+    const p = await profile.getProfile(db, user.id);
+    expect(p.fullName).toBe("Mohamed Shereef");
+    expect(p.contactEmail).toBe("m@example.com");
+    const quals = await profile.listQualifications(db, user.id);
+    expect(quals[0]!.obtainedOn).toBe("2017-01-01");
+  });
+});
+
 describe("CV tailoring", () => {
   it("uses only verified facts and strips invented numbers and certifications", async () => {
     const { user } = await makeUser();
