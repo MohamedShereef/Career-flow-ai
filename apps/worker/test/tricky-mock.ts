@@ -23,6 +23,11 @@ export const TRICKY_HTML = String.raw`<!doctype html><html><head><title>Apply â€
   <div id="rel" role="combobox" tabindex="0" aria-haspopup="listbox" aria-controls="rel-pop" aria-labelledby="rel-l" aria-required="true" style="border:1px solid #999;padding:4px;width:200px">No Selection</div>
   <select name="religion" id="rel-native" style="display:none"><option value="">No Selection</option><option value="ISL">Islam</option><option value="CHR">Christianity</option></select>
   <ul role="listbox" id="rel-pop" class="hidden"><li role="option">Islam</li><li role="option">Christianity</li></ul>
+  <div class="paginatedPicklistContainer">
+    <input aria-label="Highest Education Level" autocomplete="off" type="text" placeholder="No Selection" value="No Selection" aria-owns="edu-list" role="combobox" aria-required="true" id="edu" size="20">
+    <input type="hidden" name="education" id="edu-val">
+    <ul role="listbox" id="edu-list"></ul>
+  </div>
   <label for="hobby">Favourite sport</label><select id="hobby" name="hobby"><option value="">Selectâ€¦</option><option>Chess</option></select>
   <button type="submit">Submit Application</button>
 </form>
@@ -38,6 +43,17 @@ const ic = document.getElementById("ic"), list = document.getElementById("ic-lis
 document.querySelector(".cb .icon").addEventListener("click", () => list.classList.remove("hidden"));
 ic.addEventListener("focus", () => list.classList.remove("hidden"));
 ic.addEventListener("input", () => { list.classList.remove("hidden"); [...list.children].forEach(o => o.style.display = o.textContent.toLowerCase().includes(ic.value.toLowerCase()) ? "" : "none"); });
+// SuccessFactors paginated picklist: options come from the "server" only on real key presses;
+// leaving without choosing from the list resets it to "No Selection".
+const EDU = ["Diploma", "Bachelor's Degree", "Master's Degree", "Doctorate"];
+const edu = document.getElementById("edu"), eduList = document.getElementById("edu-list"), eduVal = document.getElementById("edu-val");
+let eduChosen = "";
+edu.addEventListener("keyup", () => setTimeout(() => {
+  const q = edu.value.toLowerCase();
+  eduList.innerHTML = EDU.filter((x) => x.toLowerCase().includes(q)).map((x) => '<li role="option">' + x + '</li>').join("");
+  eduList.querySelectorAll("li").forEach((li) => li.addEventListener("mousedown", () => { eduChosen = li.textContent; edu.value = li.textContent; eduVal.value = li.textContent; eduList.innerHTML = ""; }));
+}, 400));
+edu.addEventListener("blur", () => setTimeout(() => { if (edu.value !== eduChosen) { edu.value = "No Selection"; eduVal.value = ""; } }, 150));
 // Religion: like a SuccessFactors picklist that ignores option clicks but accepts type-ahead + Enter.
 const rel = document.getElementById("rel"), relPop = document.getElementById("rel-pop"), relNative = document.getElementById("rel-native");
 let typed = "";

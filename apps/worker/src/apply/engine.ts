@@ -338,15 +338,33 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files) 
       await form.evaluate(`${SET_NEARBY_SELECT}(${JSON.stringify([a.key, v.value])})`).catch(() => false);
       return;
     }
-    // Searchable dropdowns: type to filter, then choose the match.
+    // Searchable dropdowns (e.g. SuccessFactors paginated picklists) load options from the server as you
+    // type and listen for real key presses, so type letter by letter and wait for the list.
     const editable = a.type === "combobox" && (await el.isEditable().catch(() => false));
-    if (editable) await el.fill(v.value, T);
-    else await page.keyboard.type(v.value, { delay: 30 });
-    await sleep(900);
-    if (await pickOption(form, page, v.value)) return;
     if (editable) {
-      await page.keyboard.press("Enter");
-      return;
+      await el.click(T).catch(() => el.click({ force: true, ...T }));
+      await el.press("ControlOrMeta+a").catch(() => undefined);
+      await el.press("Backspace").catch(() => undefined);
+      await el.pressSequentially(v.value, { delay: 90, ...T });
+    } else {
+      await page.keyboard.type(v.value, { delay: 60 });
+    }
+    for (let i = 0; i < 8; i++) {
+      await sleep(500);
+      if (await pickOption(form, page, v.value, popup)) {
+        await sleep(400);
+        if (await keeps(form, a)) return;
+        break;
+      }
+    }
+    if (editable) {
+      // Last resort: highlight the first filtered match and confirm it.
+      await el.press("ArrowDown").catch(() => undefined);
+      await sleep(200);
+      await el.press("Enter").catch(() => undefined);
+      await sleep(400);
+      if (await keeps(form, a)) return;
+      throw new Error(`"${v.value}" wasn't accepted by the searchable list`);
     }
     await page.keyboard.press("Escape");
     throw new Error(`option "${v.value}" not found in the list`);

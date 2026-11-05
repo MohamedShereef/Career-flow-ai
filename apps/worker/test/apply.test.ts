@@ -269,6 +269,7 @@ run("auto-apply in a real browser", () => {
     const { user, job } = await setup("/tricky");
     await answers.saveAnswer(db, user.id, { questionText: "Marital Status", answer: "Married", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Religion", answer: "Islam", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Highest Education Level", answer: "Bachelor's Degree", scope: "global" });
     ai.setAiTransportForTests(async (req) => {
       const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1]!) as Array<{ key: string; question: string }>;
       const ans = (q: string) => (/studying/i.test(q) ? "No" : /institution country/i.test(q) ? "Egypt" : /sport/i.test(q) ? "Football" : null);
@@ -287,6 +288,6 @@ run("auto-apply in a real browser", () => {
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(trickySubmissions).toHaveLength(1);
-    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL" });
+    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree" });
   }, 120_000);
 });
