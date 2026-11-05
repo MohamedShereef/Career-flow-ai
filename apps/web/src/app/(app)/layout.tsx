@@ -23,6 +23,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <form action={logoutAction} className="mt-2">
             <button className="btn-ghost">Sign out</button>
           </form>
+          <div className="mt-3 px-2 text-[11px] text-muted">Version {process.env.APP_VERSION ?? "dev"}</div>
         </div>
       </aside>
       <main className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">{children}</main>

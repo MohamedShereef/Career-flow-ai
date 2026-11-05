@@ -66,6 +66,10 @@ if [ -n "${OPENAI_API_KEY:-}" ]; then
   sed -i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=$OPENAI_API_KEY|" .env
 fi
 
+# Record which version is running (shown in the app and /api/health).
+VER=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo unknown)
+if grep -q '^APP_VERSION=' .env; then sed -i "s|^APP_VERSION=.*|APP_VERSION=$VER|" .env; else echo "APP_VERSION=$VER" >> .env; fi
+
 # 5) Build (old containers keep serving meanwhile), then restart
 log "Building"
 $DOCKER compose --env-file .env build

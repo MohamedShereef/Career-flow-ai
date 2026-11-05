@@ -26,6 +26,7 @@ export interface MailHeader {
   subject: string;
   date: Date;
   bulk: boolean;
+  replyTo?: string | null;
 }
 
 export interface MailSource {
@@ -77,6 +78,7 @@ export const imapSource: MailSourceFactory = async ({ email, appPassword }) => {
             subject: e?.subject ?? "",
             date: e?.date ? new Date(e.date) : new Date(),
             bulk: /list-unsubscribe|precedence:\s*(bulk|list)/i.test(h),
+            replyTo: e?.replyTo?.[0]?.address?.toLowerCase() ?? null,
           });
         }
       }
@@ -287,6 +289,8 @@ export async function sync(db: Db, userId: string, opts: { source?: MailSourceFa
           jobTitle: data.jobTitle?.slice(0, 200) ?? null,
           proposedTimes: times,
           actionNeeded: data.actionNeeded,
+          rfcMessageId: h.messageId.startsWith("uid-") ? null : h.messageId.slice(0, 300),
+          replyTo: h.replyTo?.slice(0, 200) ?? null,
         })
         .onConflictDoNothing()
         .returning();
@@ -295,6 +299,16 @@ export async function sync(db: Db, userId: string, opts: { source?: MailSourceFa
         res.matched++;
         const u = await applyEffect(db, userId, m.app, row);
         if (u) res.updates.push(u);
+      }
+      // Interviews, tests and offers that need an answer get a reply drafted right away (sent only by the user).
+      if (row && row.actionNeeded && ["interview_invitation", "assessment", "offer"].includes(row.classification)) {
+        try {
+          const { draftReply } = await import("./replies");
+          await draftReply(db, userId, row.id, { emailText: text });
+          res.updates.push(`reply drafted for ${row.employerName ?? row.fromDomain}`);
+        } catch (err) {
+          if (err instanceof AppError && ["ai_auth", "ai_rate_limited"].includes(err.code)) throw err;
+        }
       }
     }
     await db.update(gmailIntegrations).set({ historyId: `${uidValidity}:${maxUid}`, lastSyncAt: new Date(), status: "connected", lastError: null, updatedAt: new Date() }).where(eq(gmailIntegrations.id, g.id));

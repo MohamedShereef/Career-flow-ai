@@ -80,7 +80,7 @@ describe("gmail tracking", () => {
 
     const r = await gmail.sync(db, user.id, { source });
     expect(r).toMatchObject({ seen: 5, relevant: 2, classified: 2, matched: 2 });
-    expect(prompts).toHaveLength(2); // the sale, the job alert and the personal email were never sent to the AI
+    expect(prompts.filter((p) => p.startsWith("From:"))).toHaveLength(2); // the sale, the job alert and the personal email were never sent to the AI
 
     const [a1] = await db.select().from(applications).where(eq(applications.id, roshn.id));
     expect(a1!.status).toBe("confirmed_by_email");
@@ -104,7 +104,7 @@ describe("gmail tracking", () => {
     const r2 = await gmail.sync(db, user.id, { source });
     expect(r2).toMatchObject({ seen: 0, classified: 0 });
     const ai = await db.select().from(aiDecisions).where(and(eq(aiDecisions.userId, user.id), eq(aiDecisions.stage, "email_classification")));
-    expect(ai).toHaveLength(2);
+    expect(ai).toHaveLength(2); // classification calls (the interview reply draft is a separate stage)
   });
 
   it("marks the connection when Google rejects the app password later", async () => {

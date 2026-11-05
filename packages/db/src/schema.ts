@@ -762,6 +762,9 @@ export const processedEmails = pgTable(
     /** Interview/assessment times stated in the email, ISO strings. */
     proposedTimes: jsonb("proposed_times").$type<string[]>(),
     actionNeeded: boolean("action_needed").notNull().default(false),
+    /** Needed to reply in the same thread (headers only). */
+    rfcMessageId: text("rfc_message_id"),
+    replyTo: text("reply_to"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -830,6 +833,8 @@ export const automationSettings = pgTable(
     matchThreshold: integer("match_threshold").notNull().default(50),
     discoveryIntervalHours: integer("discovery_interval_hours").notNull().default(12),
     timezone: text("timezone").notNull().default("Asia/Riyadh"),
+    /** Free text, e.g. "Sun–Thu after 4pm Riyadh time". Used when an employer asks for availability. */
+    interviewAvailability: text("interview_availability"),
     automationConsentAt: ts("automation_consent_at"),
     emailTrackingConsentAt: ts("email_tracking_consent_at"),
     outreachConsentAt: ts("outreach_consent_at"),
@@ -941,6 +946,32 @@ export const cvTailorings = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index("cv_tailorings_user_idx").on(t.userId, t.createdAt)],
+);
+
+// ───────────────────────────── Reply drafts ─────────────────────────────
+
+export const draftStatus = pgEnum("draft_status", ["draft", "sending", "sent", "discarded", "failed"]);
+
+/** A reply CareerFlow drafted to an employer email. Sent only when the user presses Send. */
+export const emailDrafts = pgTable(
+  "email_drafts",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    processedEmailId: uuid("processed_email_id").notNull().references(() => processedEmails.id, { onDelete: "cascade" }),
+    applicationId: uuid("application_id").references(() => applications.id, { onDelete: "set null" }),
+    toAddress: text("to_address").notNull(),
+    subject: text("subject").notNull(),
+    bodyEnc: text("body_enc").notNull(),
+    chosenTime: text("chosen_time"),
+    status: draftStatus("status").notNull().default("draft"),
+    sentAt: ts("sent_at"),
+    error: text("error"),
+    aiDecisionId: uuid("ai_decision_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("email_drafts_one_open_uq").on(t.processedEmailId).where(sql`${t.status} IN ('draft','sending')`)],
 );
 
 // ───────────────────────────── Saved portal logins ─────────────────────────────

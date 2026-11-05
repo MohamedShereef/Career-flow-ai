@@ -123,7 +123,7 @@ const prepare: Handler = async (ctx) => {
       const { problems } = await fill(form, page, plan.answers, files, required);
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
-        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}` }, ctx.task.id);
+        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}`, debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));
         return { blocked: "fill_failed", problems: blocking };
       }
       // Optional fields the page wouldn't take are left empty (and not part of what you approve).
@@ -220,7 +220,7 @@ const submitHandler: Handler = async (ctx) => {
       const { problems } = await fill(form, page, mine, files, new Set(fields.filter((f) => f.required).map((f) => f.key)));
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
-        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: describeProblems(blocking) }, ctx.task.id);
+        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: describeProblems(blocking), debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));
         return { blocked: "fill_failed", problems: blocking };
       }
       const nav = await navState(form);

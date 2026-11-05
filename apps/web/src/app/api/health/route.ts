@@ -14,7 +14,7 @@ export async function GET() {
       workerOnline: h.workerOnline,
       queue: h.queue,
       aiConfigured: h.ai.configured,
-      version: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "dev",
+      version: process.env.APP_VERSION ?? process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "dev",
     });
   } catch {
     return NextResponse.json({ ok: false, database: { ok: false } }, { status: 503 });

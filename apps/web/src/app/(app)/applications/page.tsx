@@ -54,7 +54,7 @@ export default async function Applications({ searchParams }: { searchParams: Pro
           <strong>Waiting for your reply:</strong>
           <ul className="mt-1 list-disc pl-5">
             {emails.filter((x) => x.e.actionNeeded && ["interview_invitation", "assessment", "offer"].includes(x.e.classification)).slice(0, 5).map((x) => (
-              <li key={x.e.id}>{x.company ?? x.e.employerName ?? x.e.fromDomain}: {x.e.summary}</li>
+              <li key={x.e.id}>{x.company ?? x.e.employerName ?? x.e.fromDomain}: {x.e.summary} <Link href={`/emails/${x.e.id}`} className="font-medium text-brand-700 hover:underline">Reply →</Link></li>
             ))}
           </ul>
         </div>
@@ -105,7 +105,10 @@ export default async function Applications({ searchParams }: { searchParams: Pro
                     </div>
                     <div className="mt-1 text-slate-700">{e.summary}</div>
                     {e.proposedTimes && e.proposedTimes.length > 0 && <div className="mt-1 text-xs text-attention">Times mentioned: {e.proposedTimes.map((t) => new Date(t).toLocaleString("en-GB", { timeZone: "Asia/Riyadh", dateStyle: "medium", timeStyle: "short" })).join(" · ")}</div>}
-                    {e.matchedApplicationId ? <Link href={`/applications/${e.matchedApplicationId}`} className="text-xs text-brand-600 hover:underline">Open application →</Link> : <span className="text-xs text-muted">{e.matchStatus === "ambiguous" ? "Matches more than one application" : "Not linked to an application in CareerFlow"}</span>}
+                    <div className="mt-1 flex flex-wrap gap-3 text-xs">
+                      {e.matchedApplicationId ? <Link href={`/applications/${e.matchedApplicationId}`} className="text-brand-600 hover:underline">Open application →</Link> : <span className="text-muted">{e.matchStatus === "ambiguous" ? "Matches more than one application" : "Not linked to an application in CareerFlow"}</span>}
+                      {["interview_invitation", "assessment", "offer", "recruiter_outreach", "status_update"].includes(e.classification) && <Link href={`/emails/${e.id}`} className="font-medium text-brand-700 hover:underline">{e.actionNeeded ? "Reply (draft ready) →" : "Reply →"}</Link>}
+                    </div>
                   </li>
                 );
               })}

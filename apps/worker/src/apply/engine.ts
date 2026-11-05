@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 import type { autoapply } from "@careerflow/core";
-import { BOT_CHECK, CHOOSE, EXTRACT, FIND_APPLY, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
+import { BOT_CHECK, CHOOSE, EXTRACT, FIELD_DEBUG, FIND_APPLY, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -347,7 +347,7 @@ function kept(a: PlannedAnswer, got: unknown) {
 
 export interface FillResult {
   /** Fields that could not be set (with the reason). Required ones block the application. */
-  problems: Array<{ key: string; label: string; reason: string; required: boolean }>;
+  problems: Array<{ key: string; label: string; reason: string; required: boolean; wanted?: string; debug?: unknown }>;
 }
 
 /**
@@ -383,7 +383,9 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
   const problems: FillResult["problems"] = [];
   for (const a of answers) {
     if (kept(a, back[a.key])) continue;
-    problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? "the page didn't keep the value", required: required ? required.has(a.key) : true });
+    const debug = await form.evaluate(`${FIELD_DEBUG}(${JSON.stringify(a.key)})`).catch(() => null);
+    const wanted = a.value.kind === "text" ? a.value.value : a.value.kind === "multi" ? a.value.values.join("; ") : a.value.kind === "bool" ? String(a.value.value) : a.value.doc;
+    problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? `the page didn't keep the value (wanted "${wanted.slice(0, 60)}", page shows "${String(back[a.key] ?? "").slice(0, 60)}")`, required: required ? required.has(a.key) : true, wanted, debug });
   }
   return { problems };
 }

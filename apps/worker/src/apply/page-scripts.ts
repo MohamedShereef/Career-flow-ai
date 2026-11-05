@@ -291,3 +291,26 @@ export const SET_SELECT = String.raw`(([key, wanted]) => {
   el.dispatchEvent(new Event("change", { bubbles: true }));
   return true;
 })`;
+
+/** What the page actually has for a field — saved with a failure so it can be fixed precisely. */
+export const FIELD_DEBUG = String.raw`((key) => {
+  const els = [...document.querySelectorAll('[data-cf-key="' + CSS.escape(key) + '"]')];
+  if (!els.length) return { found: false };
+  const el = els[0];
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const wrap = el.closest("fieldset, .form-group, [class*='field'], [class*='question'], div") || el.parentElement;
+  return {
+    found: true,
+    count: els.length,
+    tag: el.tagName.toLowerCase(),
+    type: el.getAttribute("type"),
+    role: el.getAttribute("role"),
+    visible: r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none",
+    opacity: cs.opacity,
+    disabled: !!el.disabled || el.getAttribute("aria-disabled") === "true",
+    value: el.tagName === "SELECT" ? (el.selectedOptions[0] ? el.selectedOptions[0].text : "") : (el.type === "radio" || el.type === "checkbox") ? els.filter((g) => g.checked).map((g) => g.value) : (el.value ?? el.innerText),
+    options: el.tagName === "SELECT" ? [...el.options].slice(0, 40).map((o) => o.text.trim() + (o.value ? " [" + o.value + "]" : "")) : els.slice(0, 20).map((g) => ((g.labels && g.labels[0] && g.labels[0].innerText) || g.value || "").trim()),
+    html: (wrap ? wrap.outerHTML : el.outerHTML).replace(/\s+/g, " ").slice(0, 1500),
+  };
+})`;

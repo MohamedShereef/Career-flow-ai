@@ -64,6 +64,8 @@ export type Blocker = {
   detail: string;
   /** The portal that asked for a sign-in, so the user can save a login for it. */
   host?: string;
+  /** Technical details for fixing the engine (field HTML, options…). */
+  debug?: unknown;
 };
 
 export interface FormSnapshot {
@@ -482,18 +484,19 @@ const ERROR_TEXT: Record<Blocker["kind"], string> = {
   fill_failed: "Some fields on the employer's form couldn't be filled automatically. Open the page and apply with your CV.",
 };
 
-export async function recordBlocker(db: Db, applicationId: string, b: Blocker, taskId?: string) {
+export async function recordBlocker(db: Db, applicationId: string, b: Blocker, taskId?: string, screenshot?: Buffer | null) {
   const [a] = await db.select().from(applications).where(eq(applications.id, applicationId));
   if (!a) return;
+  const shot = screenshot ? await storeFile(db, a.userId, "evidence_screenshot", screenshot, "image/png", "where-it-stopped.png", "Form where CareerFlow stopped") : null;
   const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch", job_board: "unsupported_ats", login_failed: "login_required", verification_required: "login_required" } as const)[b.kind];
   const [err] = await db
     .insert(errorRecords)
-    .values({ userId: a.userId, applicationId, taskId: taskId ?? null, stage: "prepare", category, rootCauseKey: `${category}:${a.employerKey}`, userMessage: ERROR_TEXT[b.kind], technicalDetail: { detail: b.detail } })
+    .values({ userId: a.userId, applicationId, taskId: taskId ?? null, stage: "prepare", category, rootCauseKey: `${category}:${a.employerKey}`, userMessage: ERROR_TEXT[b.kind], technicalDetail: { detail: b.detail, ...(b.debug ? { debug: b.debug } : {}), ...(shot ? { screenshotDocumentId: shot.id } : {}) } })
     .returning();
   const reason = b.kind === "fill_failed" ? `${ERROR_TEXT.fill_failed} (${b.detail.slice(0, 300)})` : ERROR_TEXT[b.kind];
   const cp = { ...((a.checkpointData as Record<string, unknown> | null) ?? {}), ...(b.host ? { loginHost: b.host } : {}) };
   await db.update(applications).set({ status: "needs_user_action", statusReason: reason, checkpoint: `blocked_${b.kind}`, checkpointData: cp, lastErrorId: err!.id, updatedAt: new Date() }).where(eq(applications.id, applicationId));
-  await event(db, a.userId, applicationId, "error", "prepare", reason, { detail: b.detail });
+  await event(db, a.userId, applicationId, "error", "prepare", reason, { detail: b.detail, ...(shot ? { screenshotDocumentId: shot.id } : {}) });
 }
 
 export async function recordWaitingForAnswers(db: Db, applicationId: string, count: number) {

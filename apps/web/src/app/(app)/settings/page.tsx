@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { SOURCE_HELP, auth, autoapply, dashboard, discovery, gmail, logins, settings } from "@careerflow/core";
 import { changePasswordAction, signOutOtherSessionsAction } from "@/actions/auth";
-import { autopilotAction, connectGmailAction, deleteLoginAction, disconnectGmailAction, saveLoginAction, syncGmailAction } from "@/actions/applications";
+import { autopilotAction, connectGmailAction, deleteLoginAction, disconnectGmailAction, saveAvailabilityAction, saveLoginAction, syncGmailAction } from "@/actions/applications";
 import { consentAction, saveAutomationAction } from "@/actions/profile";
 import { addSourceAction, toggleSourceAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -43,6 +43,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 <Select label="Time zone" name="timezone" defaultValue={s.timezone} options={[["Asia/Riyadh", "Riyadh (UTC+3)"], ["Asia/Dubai", "Dubai (UTC+4)"], ["Africa/Cairo", "Cairo"], ["UTC", "UTC"]]} />
               </div>
               <SubmitButton>Save limits</SubmitButton>
+            </ActionForm>
+          </Card>
+          <Card title="Interview availability" description="Used word for word when an employer asks when you're free. Replies are always shown to you before sending.">
+            <ActionForm action={saveAvailabilityAction} className="space-y-3">
+              <Field label="When can you usually interview?" name="availability" defaultValue={s.interviewAvailability ?? ""} placeholder="Sunday–Thursday after 4 pm, Riyadh time; Saturdays any time" />
+              <SubmitButton>Save</SubmitButton>
             </ActionForm>
           </Card>
           <Card title="Autopilot" description="Works on its own between your visits: picks your best new matches, tailors the CV and fills the employer's form.">
@@ -231,6 +237,7 @@ async function Diagnostics() {
     <div className="grid gap-6 lg:grid-cols-2">
       <Card title="Services">
         <ul className="space-y-2 text-sm">
+          <li className="flex justify-between"><span>Version running</span><Badge>{process.env.APP_VERSION ?? "dev"}</Badge></li>
           <li className="flex justify-between"><span>Database</span><Badge tone="good">OK · {h.database.latencyMs} ms</Badge></li>
           <li className="flex justify-between"><span>AI key</span><Badge tone={h.ai.state === "working" ? "good" : h.ai.state === "untested" ? "neutral" : "bad"}>{h.ai.state}</Badge></li>
           {h.ai.lastError && <li className="text-xs text-bad">Last AI error: {h.ai.lastError}</li>}

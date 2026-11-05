@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { applications, autoapply, gmail, logins, queue } from "@careerflow/core";
+import { applications, autoapply, gmail, logins, queue, replies } from "@careerflow/core";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { runAction, str, type ActionState } from "@/lib/action";
@@ -139,4 +139,38 @@ export async function disconnectGmailAction(fd: FormData) {
   const user = await requireUser();
   await gmail.disconnect(db(), user.id);
   revalidatePath("/", "layout");
+}
+
+export async function draftReplyAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    const id = str(fd, "emailId");
+    await replies.draftReply(db(), user.id, id, { chosenTime: str(fd, "chosenTime") || null });
+    revalidatePath(`/emails/${id}`);
+    return "Reply drafted. Check it below.";
+  });
+}
+
+export async function sendReplyAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await replies.sendDraft(db(), user.id, str(fd, "draftId"), String(fd.get("body") ?? ""));
+    revalidatePath("/", "layout");
+    return "Sent from your Gmail, in the same thread.";
+  });
+}
+
+export async function discardReplyAction(fd: FormData) {
+  const user = await requireUser();
+  await replies.discardDraft(db(), user.id, str(fd, "draftId"));
+  revalidatePath(`/emails/${str(fd, "emailId")}`);
+}
+
+export async function saveAvailabilityAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await replies.setAvailability(db(), user.id, str(fd, "availability"));
+    revalidatePath("/settings");
+    return "Saved. Replies that share your availability will use exactly this.";
+  });
 }

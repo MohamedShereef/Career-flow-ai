@@ -195,6 +195,9 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
               {d.events.map((e) => (
                 <li key={e.id} className="border-l-2 border-line pl-3">
                   <div className={e.kind === "error" ? "text-bad" : ""}>{e.message}</div>
+                  {(e.details as { screenshotDocumentId?: string } | null)?.screenshotDocumentId && (
+                    <a className="text-xs text-brand-600 hover:underline" href={`/api/documents/${(e.details as { screenshotDocumentId: string }).screenshotDocumentId}`} target="_blank">See the form where it stopped</a>
+                  )}
                   <div className="text-xs text-muted">{fmtDate(e.createdAt)}</div>
                 </li>
               ))}
