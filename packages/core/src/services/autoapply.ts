@@ -43,6 +43,7 @@ import * as answersSvc from "./answers";
 import { audit } from "./audit";
 import * as profile from "./profile";
 import * as queue from "./queue";
+import * as feedback from "./feedback";
 import { getSettings } from "./settings";
 
 // ───────────────────────── Types shared with the worker ─────────────────────────
@@ -163,6 +164,13 @@ Rules:
 - For questions with options, answer with exactly one of the options (or several separated by ";" when it is a multi-select).
 - Free-text answers: 1-4 sentences, first person, professional, grounded in the facts. Use only figures that appear in the facts.
 - Do not answer anything about salary, legal declarations, identity numbers, protected characteristics, visas or consent.`;
+
+/** Fields a form rejected on an earlier attempt are required from now on. */
+export function applyMustFill(fields: FormField[], mustFill: string[] | undefined, keyFor: (k: string) => string = (k) => k) {
+  if (!mustFill?.length) return fields;
+  const must = new Set(mustFill);
+  return fields.map((f) => (must.has(`key:${keyFor(f.key)}`) || must.has(`key:${f.key}`) || must.has(`label:${f.label.toLowerCase()}`) ? { ...f, required: true } : f));
+}
 
 export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapshot): Promise<Plan> {
   const [p, exps, quals, skills, facts] = await Promise.all([
@@ -430,7 +438,9 @@ export async function startAutoApply(db: Db, userId: string, input: { jobId: str
     applyUrl = (prev?.cp as { applyUrl?: string } | null)?.applyUrl ?? null;
   }
   const ats = atsFromUrl(applyUrl ?? job.applyUrl);
-  const cpData = { tailoringId: t.id, origin: input.origin ?? "user", ats, ...(applyUrl ? { applyUrl } : {}) };
+  // Keep what earlier attempts learned about this employer's form.
+  const prevMust = (prev?.cp as { mustFill?: string[] } | null)?.mustFill;
+  const cpData = { tailoringId: t.id, origin: input.origin ?? "user", ats, ...(applyUrl ? { applyUrl } : {}), ...(prevMust?.length ? { mustFill: prevMust } : {}) };
   const [app] = await db
     .insert(applications)
     .values({ userId, jobId: job.id, employerKey: job.employerKey, status: "processing", tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "queued_prepare", checkpointData: cpData })
@@ -615,6 +625,7 @@ export async function approve(db: Db, userId: string, previewId: string, actor: 
     if (tailoringId) await tx.update(cvTailorings).set({ approvedAt: sql`coalesce(${cvTailorings.approvedAt}, now())` }).where(eq(cvTailorings.id, tailoringId));
     await event(tx, userId, a.id, "user_action", "approve", actor === "user" ? "You approved this application for submission." : "Approved automatically by autopilot (every answer came from your profile or saved answers).");
     await audit(tx, { userId, actor, action: "application.approved", entityType: "application", entityId: a.id, metadata: { previewId: p.id, contentHash: p.contentHash } });
+    if (actor === "user") await feedback.record(tx, userId, a.jobId, "approved");
     await queue.enqueue(tx, { kind: "application.submit", userId, payload: { applicationId: a.id, approvalId: ap!.id }, dedupeKey: `apply:submit:${a.id}`, maxAttempts: 3, timeoutSeconds: 900 });
     return ap!;
   });
@@ -663,7 +674,7 @@ export async function reserveSubmission(db: Db, applicationId: string, approvalI
 
 export async function recordOutcome(
   db: Db,
-  input: { applicationId: string; approvalId: string; outcome: "confirmed" | "not_submitted" | "uncertain"; url: string; summary: string; screenshot?: Buffer | null; errors?: string[] },
+  input: { applicationId: string; approvalId: string; outcome: "confirmed" | "not_submitted" | "uncertain"; url: string; summary: string; screenshot?: Buffer | null; errors?: string[]; invalid?: Array<{ key: string | null; label: string; message: string }> },
 ) {
   const { app, job } = await loadContext(db, input.applicationId);
   const shot = input.screenshot ? await storeFile(db, app.userId, "evidence_screenshot", input.screenshot, "image/png", "after-submit.png", "Page after pressing Submit") : null;
@@ -676,16 +687,22 @@ export async function recordOutcome(
       await tx.update(applications).set({ status: "submitted_unverified", statusReason: null, submittedAt: now, websiteAcknowledgedAt: now, checkpoint: "submitted", updatedAt: now }).where(eq(applications.id, app.id));
       await tx.insert(submissionEvidence).values({ userId: app.userId, applicationId: app.id, kind: "confirmation_page", level: "website", summary: input.summary, url: input.url, documentId: shot?.id ?? null });
       await event(tx, app.userId, app.id, "evidence", "submit", `Submitted. The employer's site confirmed: “${input.summary.slice(0, 160)}”`);
+      await feedback.record(tx, app.userId, app.jobId, "applied");
     } else if (input.outcome === "not_submitted") {
       await tx.update(submissionLedger).set({ state: "abandoned", updatedAt: now }).where(ledgerWhere);
       await tx.update(approvals).set({ invalidatedAt: now, invalidatedReason: "form_rejected" }).where(eq(approvals.id, input.approvalId));
-      const msg = `The employer's form didn't accept the application${input.errors?.length ? `: ${input.errors.slice(0, 3).join("; ")}` : ""}. Nothing was sent.`;
+      const errs = [...new Set(input.errors ?? [])];
+      const msg = `The employer's form didn't accept the application${errs.length ? `: ${errs.slice(0, 4).join("; ")}` : ""}. Nothing was sent. Press “Try automatic again” — CareerFlow now treats these fields as required and will ask you for anything it can't answer.`;
       const [err] = await tx
         .insert(errorRecords)
-        .values({ userId: app.userId, applicationId: app.id, stage: "submit", category: "readback_mismatch", rootCauseKey: `form_rejected:${app.employerKey}`, userMessage: msg, technicalDetail: { errors: input.errors ?? [], url: input.url } })
+        .values({ userId: app.userId, applicationId: app.id, stage: "submit", category: "readback_mismatch", rootCauseKey: `form_rejected:${app.employerKey}`, userMessage: msg, technicalDetail: { errors: errs, invalid: input.invalid ?? [], url: input.url, ...(shot ? { screenshotDocumentId: shot.id } : {}) } })
         .returning();
-      await tx.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "form_rejected", lastErrorId: err!.id, updatedAt: now }).where(eq(applications.id, app.id));
-      await event(tx, app.userId, app.id, "error", "submit", msg);
+      // Learn from the rejection: the flagged fields are required on the next attempt.
+      const cp = (a0: unknown) => (a0 as Record<string, unknown> | null) ?? {};
+      const prevMust = (cp(app.checkpointData).mustFill as string[] | undefined) ?? [];
+      const mustFill = [...new Set([...prevMust, ...(input.invalid ?? []).flatMap((f) => [f.key ? `key:${f.key}` : "", f.label ? `label:${f.label.toLowerCase()}` : ""]).filter(Boolean)])];
+      await tx.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "form_rejected", checkpointData: { ...cp(app.checkpointData), mustFill }, lastErrorId: err!.id, updatedAt: now }).where(eq(applications.id, app.id));
+      await event(tx, app.userId, app.id, "error", "submit", msg, shot ? { screenshotDocumentId: shot.id, invalid: input.invalid ?? [] } : { invalid: input.invalid ?? [] });
     } else {
       await tx.update(submissionLedger).set({ state: "uncertain", updatedAt: now }).where(ledgerWhere);
       await tx.update(approvals).set({ consumedAt: now }).where(eq(approvals.id, input.approvalId));
@@ -720,6 +737,7 @@ export async function cancel(db: Db, userId: string, applicationId: string) {
   await db.update(applications).set({ status: "withdrawn", statusReason: "Cancelled by you.", checkpoint: "cancelled", updatedAt: new Date() }).where(eq(applications.id, a.id));
   await db.execute(sql`UPDATE tasks SET status = 'cancelled', finished_at = now() WHERE status = 'queued' AND kind IN ('application.prepare','application.submit') AND payload->>'applicationId' = ${a.id}`);
   await event(db, userId, a.id, "user_action", "cancel", "You cancelled this application.");
+  await feedback.record(db, userId, a.jobId, "cancelled");
 }
 
 // ───────────────────────── Reading ─────────────────────────
@@ -819,6 +837,7 @@ export async function recordUnplannedSubmit(db: Db, applicationId: string, info:
     await tx.insert(submissionEvidence).values({ userId: app.userId, applicationId, kind: "confirmation_page", level: "website", summary: info.summary || "Confirmation shown", url: info.url, documentId: shot?.id ?? null });
     await event(tx, app.userId, applicationId, "error", "prepare", "Heads-up: this employer's form submitted on “Next” (no separate Submit step). It was sent with the answers shown here, before your final approval.");
     await audit(tx, { userId: app.userId, actor: "agent", action: "application.unplanned_submit", entityType: "application", entityId: applicationId, metadata: { url: info.url } });
+    await feedback.record(tx, app.userId, app.jobId, "applied");
   });
 }
 

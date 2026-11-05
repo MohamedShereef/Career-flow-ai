@@ -948,6 +948,46 @@ export const cvTailorings = pgTable(
   (t) => [index("cv_tailorings_user_idx").on(t.userId, t.createdAt)],
 );
 
+// ───────────────────────────── Learning ─────────────────────────────
+
+/**
+ * What worked for filling a kind of field on a site. Shared across users: it describes the
+ * site's widget, never anyone's answer (AI-found steps store "{{value}}", not the value).
+ */
+export const fieldRecipes = pgTable(
+  "field_recipes",
+  {
+    id: id(),
+    host: text("host").notNull(),
+    signature: text("signature").notNull(),
+    fieldGroup: text("field_group").notNull(),
+    strategy: text("strategy").notNull(),
+    steps: jsonb("steps"),
+    successes: integer("successes").notNull().default(0),
+    failures: integer("failures").notNull().default(0),
+    lastSuccessAt: ts("last_success_at"),
+    lastFailureAt: ts("last_failure_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("field_recipes_uq").on(t.host, t.signature, t.strategy)],
+);
+
+export const feedbackSignal = pgEnum("feedback_signal", ["not_interested", "approved", "cancelled", "applied", "interview", "rejected", "offer"]);
+
+/** The user's decisions and real outcomes, used to tune job matching. */
+export const jobFeedback = pgTable(
+  "job_feedback",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+    signal: feedbackSignal("signal").notNull(),
+    reason: text("reason"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("job_feedback_uq").on(t.userId, t.jobId, t.signal), index("job_feedback_user_idx").on(t.userId, t.createdAt)],
+);
+
 // ───────────────────────────── Reply drafts ─────────────────────────────
 
 export const draftStatus = pgEnum("draft_status", ["draft", "sending", "sent", "discarded", "failed"]);

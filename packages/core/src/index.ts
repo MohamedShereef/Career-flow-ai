@@ -27,3 +27,5 @@ export * as employerLink from "./services/employer-link";
 export * as logins from "./services/logins";
 export * as gmail from "./services/gmail";
 export * as replies from "./services/replies";
+export * as fieldMemory from "./services/field-memory";
+export * as feedback from "./services/feedback";

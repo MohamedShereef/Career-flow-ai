@@ -17,7 +17,7 @@ export class NonRetryableError extends Error {}
 export type Handler = (ctx: HandlerContext) => Promise<unknown>;
 
 /** Score in batches until nothing is left or the task's time budget is used up. */
-async function evaluateUntilDone(db: Database, userId: string, opts: { staleBefore?: Date }, deadline: number) {
+async function evaluateUntilDone(db: Database, userId: string, opts: { staleBefore?: Date; rescoreDecisions?: string[] }, deadline: number) {
   const limit = Number(process.env.MAX_EVALUATIONS_PER_RUN ?? 40);
   const total = { evaluated: 0, recommended: 0, rejected: 0, review: 0, skipped: 0, more: false };
   for (;;) {
@@ -73,8 +73,9 @@ export const handlers: Record<string, Handler> = {
   "matching.run_user": async ({ db, task }) => {
     const userId = String(task.payload.userId);
     const staleBefore = typeof task.payload.staleBefore === "string" ? new Date(task.payload.staleBefore) : undefined;
+    const rescoreDecisions = Array.isArray(task.payload.rescoreDecisions) ? (task.payload.rescoreDecisions as string[]) : undefined;
     const deadline = Date.now() + Math.max(60, task.timeoutSeconds - 90) * 1000;
-    const r = await evaluateUntilDone(db, userId, { staleBefore }, deadline);
+    const r = await evaluateUntilDone(db, userId, { staleBefore, rescoreDecisions }, deadline);
     if (r.more) {
       // Out of time but jobs remain: continue in a fresh task.
       await queue.enqueue(db, { kind: "matching.run_user", userId, payload: task.payload, timeoutSeconds: task.timeoutSeconds });

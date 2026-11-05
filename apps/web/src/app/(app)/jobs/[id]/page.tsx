@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { employers, matching } from "@careerflow/core";
-import { tailorForJobAction } from "@/actions/jobs";
+import { tailorForJobAction, undoNotInterestedAction } from "@/actions/jobs";
+import { NotInterested } from "@/components/not-interested";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { Badge, Card, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
@@ -38,6 +39,14 @@ export default async function JobDetail({ params }: { params: Promise<{ id: stri
       />
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
+          {e?.rejectionReasons?.some((r) => r.startsWith("Your decision")) ? (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-slate-50 p-3 text-sm">
+              <span>{e.summary} CareerFlow uses this to score similar jobs.</span>
+              <form action={undoNotInterestedAction}><input type="hidden" name="jobId" value={j.id} /><button className="btn-ghost">Undo</button></form>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-line p-3"><NotInterested jobId={j.id} /></div>
+          )}
           <Card title="Match" actions={e && <Badge tone={e.decision === "recommended" ? "good" : e.decision === "needs_review" ? "attention" : "neutral"}>{e.decision === "recommended" ? "Recommended" : e.decision === "needs_review" ? "Needs your review" : "Rejected"}</Badge>}>
             {!e ? (
               <p className="text-sm text-muted">Not evaluated yet.</p>

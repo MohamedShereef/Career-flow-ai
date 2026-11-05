@@ -3,6 +3,7 @@ import { ai, matching, tailor } from "@careerflow/core";
 import { tailorAction } from "@/actions/cv";
 import { reindexAction, runDiscoveryAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
+import { NotInterested } from "@/components/not-interested";
 import { Badge, Card, EmptyState, Field, PageHeader, TextArea, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -95,7 +96,8 @@ export default async function Jobs({ searchParams }: { searchParams: Promise<{ t
       ) : (
         <div className="space-y-3">
           {rows.map(({ e, j }) => (
-            <Link key={j.id} href={`/jobs/${j.id}`} className="card block p-4 transition hover:border-slate-300">
+            <div key={j.id} className="card p-4 transition hover:border-slate-300">
+            <Link href={`/jobs/${j.id}`} className="block">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="font-semibold">{j.title}</div>
@@ -107,6 +109,8 @@ export default async function Jobs({ searchParams }: { searchParams: Promise<{ t
               {e.rejectionReasons.length > 0 && <p className="mt-1 text-xs text-bad">{e.rejectionReasons.join(" · ")}</p>}
               <div className="mt-2 text-xs text-muted">First seen {fmtDate(j.firstSeenAt)}{j.postedAt ? ` · posted ${fmtDate(j.postedAt)}` : ""}</div>
             </Link>
+            {e.decision !== "rejected" && <div className="mt-2"><NotInterested jobId={j.id} compact /></div>}
+            </div>
           ))}
         </div>
       )}

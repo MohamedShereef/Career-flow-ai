@@ -15,6 +15,7 @@ import { AppError } from "../errors";
 import { employerKey } from "../normalize";
 import type { Db, Executor } from "../types";
 import { audit } from "./audit";
+import * as feedback from "./feedback";
 import { setConsent } from "./settings";
 
 // ───────────────────────── Mail source (IMAP or a test double) ─────────────────────────
@@ -322,6 +323,10 @@ const SENT = ["submitted_unverified", "confirmed_by_email", "interview", "reject
 
 async function applyEffect(db: Db, userId: string, a: AppRow, e: typeof processedEmails.$inferSelect) {
   const now = new Date();
+  // Real outcomes teach matching what works.
+  const learn = { application_receipt: "applied", interview_invitation: "interview", rejection: "rejected", offer: "offer" } as const;
+  const sig = learn[e.classification as keyof typeof learn];
+  if (sig) await feedback.record(db, userId, a.jobId, sig);
   const ev = (message: string, kind: "evidence" | "status_change" = "status_change") =>
     db.insert(applicationEvents).values({ userId, applicationId: a.id, kind, stage: "email", message, details: { processedEmailId: e.id } });
   const when = e.receivedAt ?? now;

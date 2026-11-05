@@ -12,6 +12,7 @@ import { AppError, notFound } from "../errors";
 import { employerKey } from "../normalize";
 import type { Db } from "../types";
 import { audit } from "./audit";
+import * as feedback from "./feedback";
 
 const titleKey = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
@@ -120,6 +121,7 @@ export async function markSubmitted(db: Db, userId: string, applicationId: strin
     await tx.update(applications).set({ status: "submitted_unverified", submittedAt: now, checkpoint: "submitted_by_user", updatedAt: now }).where(eq(applications.id, applicationId));
     await tx.insert(applicationEvents).values({ userId, applicationId, kind: "status_change", stage: "submit", message: "You submitted this application on the employer's site. Waiting for a confirmation email." });
     await audit(tx, { userId, actor: "user", action: "application.submitted_by_user", entityType: "application", entityId: applicationId });
+    await feedback.record(tx, userId, row.a.jobId, "applied");
     return { alreadyRecorded: false };
   });
 }

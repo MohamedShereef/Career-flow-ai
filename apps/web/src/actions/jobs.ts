@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { AppError, discovery, matching, queue, tailor } from "@careerflow/core";
+import { AppError, discovery, feedback, matching, queue, tailor } from "@careerflow/core";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { runAction, str, type ActionState } from "@/lib/action";
@@ -64,4 +64,20 @@ export async function toggleSourceAction(fd: FormData) {
   const user = await requireUser();
   await discovery.setSourceEnabled(db(), user.id, str(fd, "id"), str(fd, "enabled") === "1");
   revalidatePath("/settings");
+}
+
+export async function notInterestedAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await feedback.notInterested(db(), user.id, str(fd, "jobId"), str(fd, "reason") || "other", str(fd, "note") || null);
+    revalidatePath("/jobs");
+    revalidatePath(`/jobs/${str(fd, "jobId")}`);
+    return "Noted. CareerFlow will score similar jobs the same way.";
+  });
+}
+
+export async function undoNotInterestedAction(fd: FormData) {
+  const user = await requireUser();
+  await feedback.undoNotInterested(db(), user.id, str(fd, "jobId"));
+  revalidatePath(`/jobs/${str(fd, "jobId")}`);
 }

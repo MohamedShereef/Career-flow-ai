@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ai, answers, dashboard, profile } from "@careerflow/core";
+import { ai, answers, dashboard, feedback, fieldMemory, profile } from "@careerflow/core";
 import { Badge, Card, PageHeader, Stat } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -90,6 +90,7 @@ export default async function Home() {
         </div>
 
         <div className="space-y-6">
+          <Learned userId={user.id} />
           <Card title="Agent capabilities">
             <ul className="space-y-2">
               {capabilities(ai.aiConfigured()).map((c) => (
@@ -111,5 +112,19 @@ export default async function Home() {
         </div>
       </div>
     </>
+  );
+}
+
+async function Learned({ userId }: { userId: string }) {
+  const [f, m] = await Promise.all([feedback.summary(db(), userId), fieldMemory.stats(db())]);
+  return (
+    <Card title="What CareerFlow has learned" description="It gets better with every application and every decision you make.">
+      <ul className="space-y-2 text-sm">
+        <li className="flex justify-between"><span>Your decisions used in job scoring</span><Badge>{f.total}</Badge></li>
+        <li className="flex justify-between"><span>Real outcomes (interviews, rejections, offers)</span><Badge>{f.outcomes}</Badge></li>
+        <li className="flex justify-between"><span>Form-filling methods remembered</span><Badge>{m.methods} on {m.sites} sites</Badge></li>
+        <li className="flex justify-between"><span>Methods found by AI rescue</span><Badge>{m.aiFound}</Badge></li>
+      </ul>
+    </Card>
   );
 }

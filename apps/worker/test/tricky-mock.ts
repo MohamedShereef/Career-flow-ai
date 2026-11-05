@@ -28,6 +28,12 @@ export const TRICKY_HTML = String.raw`<!doctype html><html><head><title>Apply �
     <input type="hidden" name="education" id="edu-val">
     <ul role="listbox" id="edu-list"></ul>
   </div>
+  <div class="lvl-wrap">
+    <span id="lvl" role="combobox" aria-haspopup="listbox" aria-controls="lvl-pop" aria-label="Seniority Level" aria-required="true">Select</span>
+    <button type="button" id="lvl-toggle" aria-label="open list">▼</button>
+    <input type="hidden" name="seniority" id="lvl-val">
+  </div>
+  <ul role="listbox" id="lvl-pop" class="hidden"><li role="option">Mid</li><li role="option">Senior</li><li role="option">Lead</li></ul>
   <label for="hobby">Favourite sport</label><select id="hobby" name="hobby"><option value="">Select…</option><option>Chess</option></select>
   <button type="submit">Submit Application</button>
 </form>
@@ -54,6 +60,11 @@ edu.addEventListener("keyup", () => setTimeout(() => {
   eduList.querySelectorAll("li").forEach((li) => li.addEventListener("mousedown", () => { eduChosen = li.textContent; edu.value = li.textContent; eduVal.value = li.textContent; eduList.innerHTML = ""; }));
 }, 400));
 edu.addEventListener("blur", () => setTimeout(() => { if (edu.value !== eduChosen) { edu.value = "No Selection"; eduVal.value = ""; } }, 150));
+// A widget only its own small toggle button opens; none of the built-in methods work on it.
+document.getElementById("lvl-toggle").addEventListener("click", () => document.getElementById("lvl-pop").classList.remove("hidden"));
+document.querySelectorAll("#lvl-pop [role=option]").forEach((o) => o.addEventListener("click", () => {
+  document.getElementById("lvl").textContent = o.textContent; document.getElementById("lvl-val").value = o.textContent; document.getElementById("lvl-pop").classList.add("hidden");
+}));
 // Religion: like a SuccessFactors picklist that ignores option clicks but accepts type-ahead + Enter.
 const rel = document.getElementById("rel"), relPop = document.getElementById("rel-pop"), relNative = document.getElementById("rel-native");
 let typed = "";

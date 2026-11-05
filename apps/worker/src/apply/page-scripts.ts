@@ -53,7 +53,21 @@ export const EXTRACT = String.raw`(() => {
     }
     return near(el, 5) || el.name || "";
   };
-  const isReq = (el, label) => el.required || el.getAttribute("aria-required") === "true" || /\*/.test(label);
+  // Required: the attribute, an asterisk in the label, or (as on SuccessFactors) an asterisk / "required"
+  // marker in a separate element next to the field.
+  const isReq = (el, label) => {
+    if (el.required || el.getAttribute("aria-required") === "true" || /\*/.test(label)) return true;
+    // Only look inside containers that hold this field alone, so another field's asterisk never counts.
+    const controls = (c) => c.querySelectorAll("input:not([type=hidden]), select, textarea, [role=combobox], button[aria-haspopup]").length;
+    let c = el.parentElement;
+    for (let i = 0; i < 3 && c && c !== document.body && !c.matches("form") && controls(c) <= 2; i++, c = c.parentElement) {
+      const marker = c.querySelector('.required, [class*="required"], [class*="mandatory"], abbr[title*="required" i]');
+      if (marker && !marker.contains(el)) return true;
+      const lab = c.querySelector("label, legend, [class*='label']");
+      if (lab && !lab.contains(el) && /^\s*\*|\*\s*$/.test(lab.innerText || "")) return true;
+    }
+    return false;
+  };
   const strip = (l) => clean(l.replace(/\*/g, " ").replace(/\(required\)/i, ""));
 
   const counts = new Map();
@@ -195,7 +209,19 @@ export const OUTCOME = String.raw`(() => {
     .slice(0, 6);
   const challenge = [...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"], iframe[src*="hcaptcha.com"][src*="challenge"]')].some(vis);
   const submitStill = !!document.querySelector("[data-cf-submit]") && vis(document.querySelector("[data-cf-submit]"));
-  return { confirmed: !!m, confirmation: m ? body.slice(Math.max(0, m.index - 40), m.index + 200).replace(/\s+/g, " ").trim() : "", errors: errs, challenge, submitStill };
+  // Which fields does the form say are wrong, and what does it say about each?
+  const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const invalid = [...document.querySelectorAll('[aria-invalid="true"], .invalidInput, [class*="has-error"] input, [class*="has-error"] select, [class*="is-invalid"]')]
+    .filter((e) => e.matches("input, select, textarea, [role=combobox], button[aria-haspopup]"))
+    .slice(0, 20)
+    .map((e) => {
+      const ids = (e.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      const msg = clean(ids.map((i) => { const d = document.getElementById(i); return d ? d.innerText : ""; }).join(" ")) ||
+        clean((e.closest("div, fieldset") || e).querySelector('[class*="error"], [role=alert]')?.innerText || "");
+      const label = clean(e.getAttribute("aria-label") || (e.labels && e.labels[0] && e.labels[0].innerText) || e.name || "");
+      return { key: e.getAttribute("data-cf-key"), label: label.replace(/\*/g, "").trim().slice(0, 100), message: msg.slice(0, 160) };
+    });
+  return { confirmed: !!m, confirmation: m ? body.slice(Math.max(0, m.index - 40), m.index + 200).replace(/\s+/g, " ").trim() : "", errors: errs, challenge, submitStill, invalid };
 })()`;
 
 /** Interstitial "are you human" pages (Cloudflare, Akamai, PerimeterX, DataDome, Imperva). */
@@ -250,11 +276,13 @@ export const FIND_NAV = String.raw`(() => {
   return { next: !!next, submit: !!submit };
 })()`;
 
-/** Visible options of an open listbox. */
-export const LISTBOX_OPTIONS = String.raw`(() => {
+/** Visible options, optionally only inside one popup (by id). */
+export const LISTBOX_OPTIONS = String.raw`((popupId) => {
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  return [...document.querySelectorAll('[role=listbox] [role=option], [role=option]')].filter(vis).map((o) => (o.innerText || o.textContent || "").replace(/\s+/g, " ").trim()).filter((t) => t && !/^(select one|select|none)$/i.test(t)).slice(0, 80);
-})()`;
+  const root = popupId ? document.getElementById(popupId) : document;
+  if (!root) return [];
+  return [...root.querySelectorAll('[role=option]')].filter(vis).map((o) => (o.innerText || o.textContent || "").replace(/\s+/g, " ").trim()).filter((t) => t && !/^(select one|select|none|no selection)$/i.test(t)).slice(0, 80);
+})`;
 
 /** Choose a radio/checkbox option by its label like a person would (DOM click fires the page's own handlers). */
 export const CHOOSE = String.raw`(([key, wanted, on]) => {
@@ -336,4 +364,29 @@ export const SET_NEARBY_SELECT = String.raw`(([key, wanted]) => {
 export const POPUP_ID = String.raw`((key) => {
   const el = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
   return el ? (el.getAttribute("aria-controls") || el.getAttribute("aria-owns") || "").split(/\s+/)[0] : "";
+})`;
+
+/** A stable description of a widget's kind (not its value), used to remember what works per site. */
+export const WIDGET_SIG = String.raw`((key) => {
+  const el = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
+  if (!el) return "";
+  const noise = /^(is-|has-|ng-|invalid|valid|error|focus|active|open|disabled|required|selected|hover|ui-state)/i;
+  const cls = [...el.classList].filter((c) => !noise.test(c) && !/\d{3,}/.test(c)).slice(0, 4).join(".");
+  const parent = el.parentElement ? [...el.parentElement.classList].filter((c) => !noise.test(c) && !/\d{3,}/.test(c)).slice(0, 2).join(".") : "";
+  return [el.tagName.toLowerCase(), el.getAttribute("type") || "", el.getAttribute("role") || "", el.getAttribute("aria-haspopup") || "", cls, parent].join("|").slice(0, 200);
+})`;
+
+/** AI rescue may only click inside the field's own widget or the option list it controls — never buttons that submit or navigate. */
+export const SAFE_TARGET = String.raw`(([key, selector, popupId]) => {
+  const field = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
+  let t;
+  try { t = document.querySelector(selector); } catch (e) { return false; }
+  if (!field || !t) return false;
+  const txt = (t.innerText || t.value || "").trim();
+  if (t.closest("a[href]:not([href='#']):not([href^='javascript'])")) return false;
+  if (t.matches("button[type=submit], input[type=submit], input[type=image]") || /submit|apply|send|next|continue|save|sign ?in|log ?in|delete|remove|withdraw|back/i.test(txt)) return false;
+  let box = field;
+  for (let i = 0; i < 4 && box.parentElement && box.parentElement !== document.body && !box.parentElement.matches("form"); i++) box = box.parentElement;
+  const popup = popupId ? document.getElementById(popupId) : null;
+  return box.contains(t) || (popup && popup.contains(t)) || !!t.closest("[role=listbox]");
 })`;

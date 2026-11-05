@@ -1,9 +1,9 @@
-import { AppError, autoapply, employerLink, logins, queue, settings, tailor } from "@careerflow/core";
+import { AppError, autoapply, employerLink, fieldMemory, logins, queue, settings, tailor } from "@careerflow/core";
 import { applications, automationSettings } from "@careerflow/db";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Handler, HandlerContext } from "../handlers";
 import { NonRetryableError } from "../handlers";
-import { closeSession, describeProblems, fill, goNext, materialize, navState, openForm, openSession, readStep, screenshot, submit, type Files, type Session } from "./engine";
+import { closeSession, describeProblems, fill, type FillMemory, goNext, materialize, navState, openForm, openSession, readStep, screenshot, submit, type Files, type Session } from "./engine";
 
 /** Systems that need a candidate account: used only when the user saved a login for that portal. */
 const ACCOUNT_SYSTEMS = new Set(["workday", "successfactors", "oracle"]);
@@ -35,6 +35,18 @@ const hostOf = (u: string) => { try { return new URL(u).hostname.toLowerCase(); 
 const stepKey = (step: number, key: string) => (step ? `p${step}|${key}` : key);
 const stepOf = (key: string) => { const m = key.match(/^p(\d+)\|/); return m ? Number(m[1]) : 0; };
 const unstep = (a: autoapply.PlannedAnswer): autoapply.PlannedAnswer => ({ ...a, key: a.key.replace(/^p\d+\|/, "") });
+
+/** Site memory + AI rescue for this run. Rescue is only used while preparing (never during the final submit). */
+function memoryFor(ctx: HandlerContext, userId: string, page: { url(): string }, withRescue: boolean): FillMemory {
+  const host = () => hostOf(page.url());
+  return {
+    order: (sig) => fieldMemory.learnedOrder(ctx.db, host(), sig),
+    record: (sig, group, strategy, ok, steps) => fieldMemory.record(ctx.db, host(), sig, group, strategy, ok, steps),
+    ...(withRescue
+      ? { rescue: (info: Parameters<NonNullable<FillMemory["rescue"]>>[0]) => fieldMemory.rescuePlan(ctx.db, userId, { host: host(), ...info }) }
+      : {}),
+  };
+}
 
 function loginLookup(ctx: HandlerContext, userId: string, used: { id?: string }) {
   return async (host: string) => {
@@ -111,8 +123,10 @@ const prepare: Handler = async (ctx) => {
     let fields = snapshot.fields;
     let optional = 0;
     let steps = 1;
+    const mustFill = (app.checkpointData as { mustFill?: string[] } | null)?.mustFill;
     for (let step = 0; ; step++) {
       steps = step + 1;
+      fields = autoapply.applyMustFill(fields, mustFill);
       const plan = await autoapply.planAnswers(ctx.db, planCtx, { ...snapshot, fields });
       if (plan.missing.length) {
         await autoapply.askMissing(ctx.db, planCtx, plan.missing);
@@ -120,7 +134,7 @@ const prepare: Handler = async (ctx) => {
         return { waiting: plan.missing.length, step };
       }
       const required = new Set(fields.filter((f) => f.required).map((f) => f.key));
-      const { problems } = await fill(form, page, plan.answers, files, required);
+      const { problems } = await fill(form, page, plan.answers, files, required, memoryFor(ctx, app.userId, page, true));
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
         await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}`, debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));
@@ -217,7 +231,8 @@ const submitHandler: Handler = async (ctx) => {
       const added = fields.filter((f) => f.required && !mine.some((a) => a.key === f.key));
       if (gone.length || added.length) return await reprepare(`step ${step + 1}: gone ${gone.map((a) => a.label).join(", ")} added ${added.map((f) => f.label).join(", ")}`);
 
-      const { problems } = await fill(form, page, mine, files, new Set(fields.filter((f) => f.required).map((f) => f.key)));
+      // At submit, only methods already proven on this site (or the defaults) are used — no new AI experiments.
+      const { problems } = await fill(form, page, mine, files, new Set(fields.filter((f) => f.required).map((f) => f.key)), memoryFor(ctx, app.userId, page, false));
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
         await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: describeProblems(blocking), debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));
@@ -245,7 +260,7 @@ const submitHandler: Handler = async (ctx) => {
     await autoapply.reserveSubmission(ctx.db, applicationId, approvalId);
     clicked = true;
     const r = await submit(form, page);
-    await autoapply.recordOutcome(ctx.db, { applicationId, approvalId, outcome: r.outcome, url: r.url, summary: r.summary, screenshot: r.screenshot, errors: r.errors });
+    await autoapply.recordOutcome(ctx.db, { applicationId, approvalId, outcome: r.outcome, url: r.url, summary: r.summary, screenshot: r.screenshot, errors: r.errors, invalid: r.invalid });
     return { outcome: r.outcome };
   } catch (err) {
     if (clicked) {

@@ -6,8 +6,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
-import type { autoapply } from "@careerflow/core";
-import { BOT_CHECK, CHOOSE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SET_NEARBY_SELECT, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
+import type { autoapply, fieldMemory } from "@careerflow/core";
+import { createHash } from "node:crypto";
+type RescueStep = fieldMemory.RescueStep;
+import { BOT_CHECK, CHOOSE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -120,16 +122,20 @@ export async function signIn(page: Page, cred: Credentials): Promise<{ outcome: 
   return { outcome: "failed", errors: [] };
 }
 
-/** Open each custom dropdown once to learn its options. */
+/** Open each custom dropdown once to learn its options — only from its own list. */
 async function readListboxOptions(form: Frame, page: Page, fields: FormSnapshot["fields"]) {
+  const opts = async (scope: Frame | Page, popup: string) => ((await scope.evaluate(`${LISTBOX_OPTIONS}(${JSON.stringify(popup || null)})`).catch(() => [])) as string[]);
   for (const f of fields) {
     if (f.type !== "listbox") continue;
     const loc = form.locator(`[data-cf-key="${f.key.replace(/"/g, '\\"')}"]`).first();
     try {
+      const popup = ((await form.evaluate(`${POPUP_ID}(${JSON.stringify(f.key)})`).catch(() => "")) as string) || "";
+      const before = new Set([...(await opts(form, "")), ...(await opts(page, ""))]);
       await loc.click({ timeout: 4000 });
       await sleep(500);
-      const inFrame = (await form.evaluate(LISTBOX_OPTIONS).catch(() => [])) as string[];
-      f.options = inFrame.length ? inFrame : ((await page.evaluate(LISTBOX_OPTIONS).catch(() => [])) as string[]);
+      let found = popup ? [...(await opts(form, popup)), ...(await opts(page, popup))] : [];
+      if (!found.length) found = [...(await opts(form, "")), ...(await opts(page, ""))].filter((o) => !before.has(o)); // only what this click opened
+      f.options = [...new Set(found)];
       await page.keyboard.press("Escape");
       await sleep(200);
     } catch {
@@ -277,99 +283,233 @@ async function pickOption(form: Frame, page: Page, value: string, popupId = "") 
   return false;
 }
 
-async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files) {
+type Group = "file" | "select" | "choice" | "list" | "text";
+const groupOf = (t: PlannedAnswer["type"]): Group =>
+  t === "file" ? "file" : t === "select" ? "select" : t === "radio" || t === "checkbox" || t === "checkbox_group" ? "choice" : t === "listbox" || t === "combobox" ? "list" : "text";
+
+interface Ctx {
+  form: Frame;
+  page: Page;
+  a: PlannedAnswer;
+  files: Files;
+  loc: ReturnType<Frame["locator"]>;
+  popup: string;
+}
+const valueOf = (a: PlannedAnswer) => (a.value.kind === "text" ? a.value.value : "");
+
+/** Every way we know to set a field. Each one only acts; the caller verifies the result. */
+const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
+  set_files: async ({ loc, a, files }) => {
+    if (a.value.kind !== "file") throw new Error("not a file");
+    const f = files[a.value.doc];
+    if (!f) throw new Error("file not available");
+    await loc.first().setInputFiles(f.path, T);
+  },
+  select_option: async ({ loc, a }) => {
+    await loc.first().selectOption({ label: valueOf(a) }, T);
+  },
+  set_select: async ({ form, a }) => {
+    if (!(await form.evaluate(`${SET_SELECT}(${JSON.stringify([a.key, valueOf(a)])})`))) throw new Error(`option "${valueOf(a)}" not in the list`);
+  },
+  select_keyboard: async ({ loc, page, a }) => {
+    await loc.first().focus();
+    await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
+    await page.keyboard.press("Enter").catch(() => undefined);
+    await page.keyboard.press("Tab").catch(() => undefined);
+  },
+  dom_choose: async ({ form, a }) => {
+    const v = a.value;
+    const wants: Array<[string, boolean]> = v.kind === "bool" ? [["", v.value]] : v.kind === "multi" ? v.values.map((x) => [x, true]) : [[valueOf(a), true]];
+    for (const [want, on] of wants) {
+      const r = (await form.evaluate(`${CHOOSE}(${JSON.stringify([a.key, want, on])})`)) as { index: number; checked: boolean };
+      if (r.index < 0) throw new Error(`option "${want}" not found`);
+    }
+  },
+  force_check: async ({ form, loc, a }) => {
+    const v = a.value;
+    if (v.kind === "bool") {
+      await (v.value ? loc.first().check({ force: true, ...T }) : loc.first().uncheck({ force: true, ...T }));
+      return;
+    }
+    for (const want of v.kind === "multi" ? v.values : [valueOf(a)]) {
+      const r = (await form.evaluate(`${CHOOSE}(${JSON.stringify([a.key, want, true])})`)) as { index: number };
+      if (r.index < 0) throw new Error(`option "${want}" not found`);
+      await loc.nth(r.index).check({ force: true, ...T });
+    }
+  },
+  click_option: async ({ form, page, loc, a, popup }) => {
+    const el = loc.first();
+    await el.scrollIntoViewIfNeeded(T).catch(() => undefined);
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    await sleep(400);
+    if (!(await pickOption(form, page, valueOf(a), popup))) {
+      await page.keyboard.press("Escape").catch(() => undefined);
+      throw new Error(`option "${valueOf(a)}" not visible`);
+    }
+  },
+  // Widgets that ignore clicks on options but accept type-ahead on the focused field.
+  focus_type_enter: async ({ loc, page, a }) => {
+    await page.keyboard.press("Escape").catch(() => undefined);
+    await loc.first().focus();
+    await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
+    await page.keyboard.press("Enter");
+  },
+  // Searchable lists that load options from the server on real key presses (e.g. SuccessFactors picklists).
+  type_pick: async ({ form, page, loc, a, popup }) => {
+    const el = loc.first();
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    if (await el.isEditable().catch(() => false)) {
+      await el.press("ControlOrMeta+a").catch(() => undefined);
+      await el.press("Backspace").catch(() => undefined);
+      await el.pressSequentially(valueOf(a), { delay: 90, ...T });
+    } else {
+      await page.keyboard.type(valueOf(a), { delay: 60 });
+    }
+    for (let i = 0; i < 8; i++) {
+      await sleep(500);
+      if (await pickOption(form, page, valueOf(a), popup)) return;
+    }
+    throw new Error(`"${valueOf(a)}" didn't appear in the list`);
+  },
+  arrow_enter: async ({ loc, page, a }) => {
+    const el = loc.first();
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    if (await el.isEditable().catch(() => false)) {
+      await el.press("ControlOrMeta+a").catch(() => undefined);
+      await el.pressSequentially(valueOf(a), { delay: 90, ...T });
+      await sleep(1200);
+    } else {
+      await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
+    }
+    await page.keyboard.press("ArrowDown");
+    await sleep(200);
+    await page.keyboard.press("Enter");
+  },
+  native_nearby: async ({ form, a }) => {
+    if (!(await form.evaluate(`${SET_NEARBY_SELECT}(${JSON.stringify([a.key, valueOf(a)])})`))) throw new Error("no native list next to the widget");
+  },
+  fill: async ({ loc, a }) => {
+    await loc.first().fill(valueOf(a), T);
+  },
+  type_keys: async ({ loc, a }) => {
+    const el = loc.first();
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    await el.press("ControlOrMeta+a").catch(() => undefined);
+    await el.press("Backspace").catch(() => undefined);
+    await el.pressSequentially(valueOf(a), { delay: 40, ...T });
+    await el.press("Tab").catch(() => undefined);
+  },
+};
+
+const DEFAULT_ORDER: Record<Group, string[]> = {
+  file: ["set_files"],
+  select: ["select_option", "set_select", "select_keyboard"],
+  choice: ["dom_choose", "force_check"],
+  list: ["click_option", "focus_type_enter", "type_pick", "arrow_enter", "native_nearby"],
+  text: ["fill", "type_keys"],
+};
+
+/** Run an AI rescue plan, refusing anything outside the field's own widget. */
+async function runSteps(c: Ctx, steps: RescueStep[]) {
+  const el = c.loc.first();
+  for (const st of steps) {
+    switch (st.action) {
+      case "click_field":
+        await el.click(T).catch(() => el.click({ force: true, ...T }));
+        break;
+      case "click_option":
+        if (!(await pickOption(c.form, c.page, valueOf(c.a), c.popup))) throw new Error("option not visible");
+        break;
+      case "clear_field":
+        await el.press("ControlOrMeta+a").catch(() => undefined);
+        await el.press("Backspace").catch(() => undefined);
+        break;
+      case "type_value": {
+        const text = st.chars ? valueOf(c.a).slice(0, st.chars) : valueOf(c.a);
+        if (await el.isEditable().catch(() => false)) await el.pressSequentially(text, { delay: 80, ...T });
+        else await c.page.keyboard.type(text, { delay: 80 });
+        break;
+      }
+      case "press":
+        await c.page.keyboard.press(st.key);
+        break;
+      case "wait":
+        await sleep(st.ms);
+        break;
+      case "click_css": {
+        const ok = (await c.form.evaluate(`${SAFE_TARGET}(${JSON.stringify([c.a.key, st.selector, c.popup])})`).catch(() => false)) as boolean;
+        if (!ok) throw new Error("step target outside the field");
+        await c.form.locator(st.selector).first().click(T);
+        break;
+      }
+    }
+    await sleep(150);
+  }
+}
+
+export interface FillMemory {
+  /** Learned methods for a widget on this site, best first ("ai" entries carry steps). */
+  order(signature: string, group: string): Promise<Array<{ strategy: string; steps: RescueStep[] | null }>>;
+  record(signature: string, group: string, strategy: string, ok: boolean, steps?: RescueStep[] | null): Promise<void>;
+  /** Ask the AI for a plan when every known method failed. */
+  rescue?(info: { label: string; wanted: string; fieldType: string; html: string; pageValue: string; tried: string[] }): Promise<RescueStep[] | null>;
+}
+
+async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, memory?: FillMemory, allowRescue = false) {
   let loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
   if (!(await loc.count())) {
     await retag(form);
     loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
     if (!(await loc.count())) throw new Error("field disappeared from the page");
   }
-  const v = a.value;
-  if (v.kind === "file") {
-    const f = files[v.doc];
-    if (!f) throw new Error("file not available");
-    await loc.first().setInputFiles(f.path, T);
-    return;
-  }
-  if (a.type === "select" && v.kind === "text") {
+  const popup = ((await form.evaluate(`${POPUP_ID}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || "";
+  const c: Ctx = { form, page, a, files, loc, popup };
+  const group = groupOf(a.type);
+  const sig = ((await form.evaluate(`${WIDGET_SIG}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || `${group}:unknown`;
+
+  const learned = memory ? await memory.order(sig, group).catch(() => []) : [];
+  const plan: Array<{ strategy: string; steps: RescueStep[] | null }> = [...learned];
+  for (const st of DEFAULT_ORDER[group]) if (!plan.some((p) => p.strategy === st)) plan.push({ strategy: st, steps: null });
+
+  const tried: string[] = [];
+  let lastError = "";
+  for (const p of plan) {
+    const run = p.steps ? () => runSteps(c, p.steps!) : STRATEGIES[p.strategy];
+    if (!run) continue;
+    tried.push(p.strategy);
     try {
-      await loc.first().selectOption({ label: v.value }, T);
-    } catch {
-      if (!(await form.evaluate(`${SET_SELECT}(${JSON.stringify([a.key, v.value])})`))) throw new Error(`option "${v.value}" not in the list`);
+      await run(c);
+    } catch (err) {
+      lastError = (err as Error).message.split("\n")[0]!.slice(0, 120);
     }
     await sleep(300);
-    if (await keeps(form, a)) return;
-    // Some pages only accept a choice made like a person: focus, type the start, confirm.
-    await loc.first().focus().catch(() => undefined);
-    await page.keyboard.type(v.value.slice(0, 12), { delay: 60 });
-    await page.keyboard.press("Enter").catch(() => undefined);
-    await page.keyboard.press("Tab").catch(() => undefined);
-    await sleep(400);
-    return;
-  }
-  if ((a.type === "radio" || a.type === "checkbox_group") && (v.kind === "text" || v.kind === "multi")) {
-    for (const want of v.kind === "text" ? [v.value] : v.values) {
-      const r = (await form.evaluate(`${CHOOSE}(${JSON.stringify([a.key, want, true])})`)) as { index: number; checked: boolean };
-      if (r.index < 0) throw new Error(`option "${want}" not found`);
-      if (!r.checked) await loc.nth(r.index).check({ force: true, ...T });
-    }
-    return;
-  }
-  if (a.type === "checkbox" && v.kind === "bool") {
-    const r = (await form.evaluate(`${CHOOSE}(${JSON.stringify([a.key, "", v.value])})`)) as { index: number; checked: boolean };
-    if (!r.checked) await (v.value ? loc.first().check({ force: true, ...T }) : loc.first().uncheck({ force: true, ...T }));
-    return;
-  }
-  if ((a.type === "listbox" || a.type === "combobox") && v.kind === "text") {
-    const el = loc.first();
-    const popup = ((await form.evaluate(`${POPUP_ID}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || "";
-    await el.scrollIntoViewIfNeeded(T).catch(() => undefined);
-    await el.click(T).catch(() => el.click({ force: true, ...T }));
-    await sleep(400);
-    if (await pickOption(form, page, v.value, popup)) {
-      await sleep(300);
-      if (await keeps(form, a)) return;
-      // The click landed but the widget didn't take it: try the keyboard, then the hidden native list.
-      await el.focus().catch(() => undefined);
-      await page.keyboard.type(v.value.slice(0, 12), { delay: 60 });
-      await page.keyboard.press("Enter").catch(() => undefined);
-      await sleep(400);
-      if (await keeps(form, a)) return;
-      await form.evaluate(`${SET_NEARBY_SELECT}(${JSON.stringify([a.key, v.value])})`).catch(() => false);
+    if (await keeps(form, a)) {
+      await memory?.record(sig, group, p.strategy, true, p.steps).catch(() => undefined);
       return;
     }
-    // Searchable dropdowns (e.g. SuccessFactors paginated picklists) load options from the server as you
-    // type and listen for real key presses, so type letter by letter and wait for the list.
-    const editable = a.type === "combobox" && (await el.isEditable().catch(() => false));
-    if (editable) {
-      await el.click(T).catch(() => el.click({ force: true, ...T }));
-      await el.press("ControlOrMeta+a").catch(() => undefined);
-      await el.press("Backspace").catch(() => undefined);
-      await el.pressSequentially(v.value, { delay: 90, ...T });
-    } else {
-      await page.keyboard.type(v.value, { delay: 60 });
-    }
-    for (let i = 0; i < 8; i++) {
-      await sleep(500);
-      if (await pickOption(form, page, v.value, popup)) {
-        await sleep(400);
-        if (await keeps(form, a)) return;
-        break;
-      }
-    }
-    if (editable) {
-      // Last resort: highlight the first filtered match and confirm it.
-      await el.press("ArrowDown").catch(() => undefined);
-      await sleep(200);
-      await el.press("Enter").catch(() => undefined);
-      await sleep(400);
-      if (await keeps(form, a)) return;
-      throw new Error(`"${v.value}" wasn't accepted by the searchable list`);
-    }
-    await page.keyboard.press("Escape");
-    throw new Error(`option "${v.value}" not found in the list`);
+    await memory?.record(sig, group, p.strategy, false, p.steps).catch(() => undefined);
+    if (group === "file") break;
   }
-  if (v.kind === "text") await loc.first().fill(v.value, T);
+
+  // Every known method failed: let the AI propose a plan from the safe action set (once per field).
+  if (allowRescue && memory?.rescue && group !== "file" && a.value.kind === "text") {
+    const dbg = (await form.evaluate(`${FIELD_DEBUG}(${JSON.stringify(a.key)})`).catch(() => null)) as { html?: string; value?: unknown } | null;
+    const steps = await memory.rescue({ label: a.label, wanted: valueOf(a), fieldType: a.type, html: dbg?.html ?? "", pageValue: String(dbg?.value ?? ""), tried }).catch(() => null);
+    if (steps?.length) {
+      try {
+        await runSteps(c, steps);
+      } catch (err) {
+        lastError = `AI rescue: ${(err as Error).message.slice(0, 100)}`;
+      }
+      await sleep(400);
+      const ok = await keeps(form, a);
+      const name = `ai:${createHash("sha1").update(JSON.stringify(steps)).digest("hex").slice(0, 10)}`;
+      await memory.record(sig, group, name, ok, steps).catch(() => undefined);
+      if (ok) return;
+      lastError ||= "AI rescue didn't work";
+    }
+  }
+  throw new Error(lastError || "the page didn't keep the value");
 }
 
 async function keeps(form: Frame, a: PlannedAnswer) {
@@ -399,12 +539,12 @@ export interface FillResult {
  * Fill every planned answer in page order, read the form back, and re-fill anything the
  * page reset (cascading fields re-render the form). Two passes, then report what didn't stick.
  */
-export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files, required?: Set<string>): Promise<FillResult> {
+export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files, required?: Set<string>, memory?: FillMemory): Promise<FillResult> {
   const errors = new Map<string, string>();
-  const pass = async (list: PlannedAnswer[]) => {
+  const pass = async (list: PlannedAnswer[], rescue = false) => {
     for (const a of list) {
       try {
-        await fillOne(form, page, a, files);
+        await fillOne(form, page, a, files, memory, rescue);
         errors.delete(a.key);
       } catch (err) {
         errors.set(a.key, (err as Error).message.split("\n")[0]!.slice(0, 120));
@@ -421,7 +561,7 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
   let back = await readBack();
   const again = answers.filter((a) => !kept(a, back[a.key]));
   if (again.length) {
-    await pass(again);
+    await pass(again, true); // second pass: the AI may try to rescue fields that still fail
     await sleep(800);
     back = await readBack();
   }
@@ -442,6 +582,8 @@ export async function screenshot(page: Page) {
 }
 
 export interface SubmitResult {
+  /** Fields the form flagged after Submit (label, message, our key when known). */
+  invalid?: Array<{ key: string | null; label: string; message: string }>;
   outcome: "confirmed" | "not_submitted" | "uncertain";
   url: string;
   summary: string;
@@ -462,7 +604,7 @@ export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
   const pre = (await form.evaluate(OUTCOME).catch(() => null)) as { confirmed: boolean } | null;
   await form.locator("[data-cf-submit]").first().click({ timeout: 10_000 });
 
-  type Outcome = { confirmed: boolean; confirmation: string; errors: string[]; challenge: boolean; submitStill: boolean };
+  type Outcome = { confirmed: boolean; confirmation: string; errors: string[]; challenge: boolean; submitStill: boolean; invalid?: Array<{ key: string | null; label: string; message: string }> };
   let last = null as Outcome | null;
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
@@ -483,6 +625,10 @@ export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
   const url = page.url();
   if (last?.confirmed) return { outcome: "confirmed", url, summary: last.confirmation || "Confirmation shown", errors: [], screenshot: shot };
   if (last?.challenge) return { outcome: "not_submitted", url, summary: "CAPTCHA challenge", errors: ["The site showed a CAPTCHA challenge"], screenshot: shot };
-  if (last && last.submitStill && last.errors.length) return { outcome: "not_submitted", url, summary: "Form showed errors", errors: last.errors, screenshot: shot };
+  if (last && last.submitStill && (last.errors.length || last.invalid?.length)) {
+    const detailed = (last.invalid ?? []).map((f) => `${f.label || "a field"}${f.message ? `: ${f.message}` : ""}`);
+    const errors = [...new Set([...detailed, ...last.errors.filter((e) => !detailed.length || !/correct the errors/i.test(e))])].slice(0, 8);
+    return { outcome: "not_submitted", url, summary: "Form showed errors", errors, invalid: last.invalid ?? [], screenshot: shot };
+  }
   return { outcome: "uncertain", url, summary: url !== before ? `Moved to ${url}` : "No confirmation shown", errors: [], screenshot: shot };
 }

@@ -6,8 +6,8 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
-import { applications, cvTailorings, jobs, pendingQuestions, submissionEvidence, submissionLedger } from "@careerflow/db";
+import { and, eq, like } from "drizzle-orm";
+import { applications, cvTailorings, fieldRecipes, jobs, pendingQuestions, submissionEvidence, submissionLedger } from "@careerflow/db";
 import { ai, answers, autoapply, logins, profile, settings, sha256 } from "@careerflow/core";
 import { renderCvPdf } from "../../../packages/core/src/cv-pdf";
 import { getStorage } from "../../../packages/core/src/storage";
@@ -270,7 +270,15 @@ run("auto-apply in a real browser", () => {
     await answers.saveAnswer(db, user.id, { questionText: "Marital Status", answer: "Married", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Religion", answer: "Islam", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Highest Education Level", answer: "Bachelor's Degree", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Seniority Level", answer: "Senior", scope: "global" });
+    let rescues = 0;
     ai.setAiTransportForTests(async (req) => {
+      if (req.schemaName === "field_rescue") {
+        rescues++;
+        expect(req.user).toContain("Seniority Level");
+        const step = (o: Record<string, unknown>) => ({ action: null, key: null, selector: null, chars: null, ms: null, ...o });
+        return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ steps: [step({ action: "click_css", selector: "#lvl-toggle" }), step({ action: "click_option" })], reason: "The list opens from the toggle button next to the field." }) };
+      }
       const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1]!) as Array<{ key: string; question: string }>;
       const ans = (q: string) => (/studying/i.test(q) ? "No" : /institution country/i.test(q) ? "Egypt" : /sport/i.test(q) ? "Football" : null);
       return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: qs.map((q) => ({ key: q.key, answer: ans(q.question) })) }) };
@@ -278,7 +286,8 @@ run("auto-apply in a real browser", () => {
     await profile.updateProfile(db, user.id, { residencyCountry: "Saudi Arabia" });
     const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
     const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { previewId?: string; blocked?: string; problems?: unknown };
-    expect(r.blocked, JSON.stringify(r.problems)).toBeUndefined();
+    expect(r.blocked, JSON.stringify(r)).toBeUndefined();
+    expect(r.previewId, JSON.stringify(r) + JSON.stringify((await answers.listPendingQuestions(db, user.id)).map((q) => q.questionText))).toBeTruthy();
     const d = await autoapply.getDetail(db, user.id, app.id);
     const got = Object.fromEntries(d.preview!.data.answers.map((x) => [x.label, x.value.kind === "text" ? x.value.value : x.value.kind]));
     expect(got).toMatchObject({ Country: "Saudi Arabia", "Marital Status": "Married", "Are you currently studying here?": "No", "Institution Country": "Egypt" });
@@ -288,6 +297,14 @@ run("auto-apply in a real browser", () => {
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(trickySubmissions).toHaveLength(1);
-    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree" });
+    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree", seniority: "Senior" });
+    // Learned: the AI-found method was saved for this site and reused at submit without asking the AI again.
+    expect(rescues).toBe(1);
+    const learned = await db.select().from(fieldRecipes).where(like(fieldRecipes.strategy, "ai:%"));
+    expect(learned).toHaveLength(1);
+    expect(learned[0]!.successes).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(learned[0]!.steps)).not.toContain("Senior"); // methods never store anyone's answers
+    const typed = await db.select().from(fieldRecipes).where(eq(fieldRecipes.strategy, "focus_type_enter"));
+    expect(typed[0]!.successes).toBeGreaterThanOrEqual(2);
   }, 120_000);
 });

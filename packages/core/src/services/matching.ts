@@ -11,6 +11,7 @@ import { AppError } from "../errors";
 import type { Db } from "../types";
 import { isProcurementFamily } from "./discovery";
 import { assessEmployer, employerGate, EMPLOYER_TYPE_LABEL } from "./employers";
+import * as feedback from "./feedback";
 import * as profile from "./profile";
 import { getSettings } from "./settings";
 
@@ -68,7 +69,7 @@ export interface MatchRunResult {
   skipped: number;
 }
 
-export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?: number; staleBefore?: Date } = {}): Promise<MatchRunResult> {
+export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?: number; staleBefore?: Date; rescoreDecisions?: string[] } = {}): Promise<MatchRunResult> {
   const limit = opts.limit ?? Number(process.env.MAX_EVALUATIONS_PER_RUN ?? 40);
   const [p, settings, exps, quals, skills, facts] = await Promise.all([
     profile.getProfile(db, userId),
@@ -102,11 +103,17 @@ export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?
               ),
             ),
         ),
+        // Learning re-scores only what's currently recommended / for review; the user's own "not interested" is final.
+        opts.rescoreDecisions?.length
+          ? sql`EXISTS (SELECT 1 FROM job_evaluations je WHERE je.job_id = ${jobs.id} AND je.user_id = ${userId} AND je.superseded_at IS NULL AND je.decision::text IN (${sql.join(opts.rescoreDecisions.map((d) => sql`${d}`), sql`, `)}))`
+          : undefined,
+        sql`NOT EXISTS (SELECT 1 FROM job_feedback f WHERE f.job_id = ${jobs.id} AND f.user_id = ${userId} AND f.signal = 'not_interested')`,
       ),
     )
     .orderBy(desc(jobs.firstSeenAt))
     .limit(limit * 3);
 
+  const [learned, ruledOut] = await Promise.all([feedback.learnedContext(db, userId), feedback.ruledOutEmployers(db, userId)]);
   const candidateProfile = {
     headline: p.headline,
     yearsExperience: p.yearsExperience,
@@ -161,6 +168,10 @@ export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?
       continue;
     }
 
+    if (ruledOut.has(job.employerKey)) {
+      await write(job, { score: 0, decision: "rejected", eligibility: "uncertain", breakdown: [], summary: "You said you're not interested in this employer.", rejectionReasons: ["Employer you ruled out"], method: "rule" });
+      continue;
+    }
     const employer = await assessEmployer(db, userId, job.companyName, job.description ?? undefined);
     const gate = employerGate(employer, p);
     const employerInfo = { type: EMPLOYER_TYPE_LABEL[employer.employerType], scale: employer.scale, pif: employer.pifAffiliated, redFlags: employer.redFlags };
@@ -191,6 +202,7 @@ export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?
         system: SYSTEM,
         user:
           `CANDIDATE:\n${JSON.stringify(candidateProfile)}\n\nEMPLOYER ASSESSMENT: ${JSON.stringify(employerInfo)}\n` +
+          (learned ? `\nLEARNED FROM THE CANDIDATE'S OWN DECISIONS (weigh similar jobs the same way; say so in a factor if it changed the score):\n${learned}\n` : "") +
           `Candidate prefers client-side and PIF-affiliated employers; large tier-1 contractors are acceptable.\n\n` +
           `JOB: ${job.title} at ${job.companyName}\nLocation: ${job.location ?? "not stated"}\nType: ${job.employmentType ?? "not stated"}\n` +
           `Salary: ${job.salaryMin || job.salaryMax ? `${job.salaryMin ?? "?"}-${job.salaryMax ?? "?"} ${job.salaryCurrency ?? ""}` : "not published"}\n\nDESCRIPTION:\n"""\n${job.description.slice(0, 12_000)}\n"""`,
