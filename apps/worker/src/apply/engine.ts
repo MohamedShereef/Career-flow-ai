@@ -476,6 +476,13 @@ export interface FillMemory {
   rescue?(info: { label: string; wanted: string; fieldType: string; html: string; pageValue: string; tried: string[] }): Promise<RescueStep[] | null>;
 }
 
+type Attempt = { method: string; error?: string; after?: string };
+class FillError extends Error {
+  constructor(message: string, readonly attempts: Attempt[]) {
+    super(message);
+  }
+}
+
 async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, memory?: FillMemory, allowRescue = false) {
   let loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
   if (!(await loc.count())) {
@@ -493,15 +500,23 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
   for (const st of DEFAULT_ORDER[group]) if (!plan.some((p) => p.strategy === st)) plan.push({ strategy: st, steps: null });
 
   const tried: string[] = [];
+  const attempts: Attempt[] = [];
+  const pageValue = async () => {
+    const back = (await form.evaluate(`${READBACK}(${JSON.stringify([a.key])})`).catch(() => ({}))) as Record<string, unknown>;
+    return JSON.stringify(back[a.key] ?? null).slice(0, 80);
+  };
   let lastError = "";
   for (const p of plan) {
     const run = p.steps ? () => runSteps(c, p.steps!) : STRATEGIES[p.strategy];
     if (!run) continue;
     tried.push(p.strategy);
+    const at: Attempt = { method: p.strategy };
+    attempts.push(at);
     try {
       await run(c);
     } catch (err) {
       lastError = (err as Error).message.split("\n")[0]!.slice(0, 120);
+      at.error = lastError;
     }
     await sleep(300);
     // Picklists only commit (or reset) when you leave the field, so judge them after leaving it.
@@ -513,6 +528,7 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       await memory?.record(sig, group, p.strategy, true, p.steps).catch(() => undefined);
       return;
     }
+    at.after = await pageValue();
     await memory?.record(sig, group, p.strategy, false, p.steps).catch(() => undefined);
     if (group === "file") break;
   }
@@ -536,7 +552,7 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       lastError ||= "AI rescue didn't work";
     }
   }
-  throw new Error(lastError || "the page didn't keep the value");
+  throw new FillError(lastError || "the page didn't keep the value", attempts);
 }
 
 async function keeps(form: Frame, a: PlannedAnswer) {
@@ -568,6 +584,7 @@ export interface FillResult {
  */
 export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files, required?: Set<string>, memory?: FillMemory): Promise<FillResult> {
   const errors = new Map<string, string>();
+  const attemptsByKey = new Map<string, Attempt[]>();
   const pass = async (list: PlannedAnswer[], rescue = false) => {
     for (const a of list) {
       try {
@@ -575,6 +592,7 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
         errors.delete(a.key);
       } catch (err) {
         errors.set(a.key, (err as Error).message.split("\n")[0]!.slice(0, 120));
+        if (err instanceof FillError) attemptsByKey.set(a.key, [...(attemptsByKey.get(a.key) ?? []), ...err.attempts]);
       }
     }
   };
@@ -597,7 +615,8 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
     if (kept(a, back[a.key])) continue;
     const debug = await form.evaluate(`${FIELD_DEBUG}(${JSON.stringify(a.key)})`).catch(() => null);
     const wanted = a.value.kind === "text" ? a.value.value : a.value.kind === "multi" ? a.value.values.join("; ") : a.value.kind === "bool" ? String(a.value.value) : a.value.doc;
-    problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? `the page didn't keep the value (wanted "${wanted.slice(0, 60)}", page shows "${String(back[a.key] ?? "").slice(0, 60)}")`, required: required ? required.has(a.key) : true, wanted, debug });
+    const blocked = (await form.evaluate("window.__cfBlocked || 0").catch(() => 0)) as number;
+    problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? `the page didn't keep the value (wanted "${wanted.slice(0, 60)}", page shows "${String(back[a.key] ?? "").slice(0, 60)}")`, required: required ? required.has(a.key) : true, wanted, debug: { ...(debug as object | null ?? {}), attempts: attemptsByKey.get(a.key) ?? [], blockedSubmits: blocked } });
   }
   return { problems };
 }
