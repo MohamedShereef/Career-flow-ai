@@ -16,6 +16,19 @@ export class NonRetryableError extends Error {}
 
 export type Handler = (ctx: HandlerContext) => Promise<unknown>;
 
+/** Score in batches until nothing is left or the task's time budget is used up. */
+async function evaluateUntilDone(db: Database, userId: string, opts: { staleBefore?: Date }, deadline: number) {
+  const limit = Number(process.env.MAX_EVALUATIONS_PER_RUN ?? 40);
+  const total = { evaluated: 0, recommended: 0, rejected: 0, review: 0, skipped: 0, more: false };
+  for (;;) {
+    const r = await matching.evaluateJobsForUser(db, userId, { ...opts, limit });
+    for (const k of ["evaluated", "recommended", "rejected", "review", "skipped"] as const) total[k] += r[k];
+    // Stop when the batch wasn't full, or when nothing could be saved (avoid spinning on failures).
+    if (r.evaluated < limit || r.recommended + r.rejected + r.review === 0) return total;
+    if (Date.now() > deadline) return { ...total, more: true };
+  }
+}
+
 /**
  * Handlers registered here are the only task kinds this worker claims.
  * Kinds without a handler stay queued (visible in diagnostics) until a worker
@@ -38,15 +51,16 @@ export const handlers: Record<string, Handler> = {
   },
 
   /** Evaluate new/changed jobs for every user with a usable profile. */
-  "matching.run_all": async ({ db }) => {
+  "matching.run_all": async ({ db, task }) => {
     if (!ai.aiConfigured()) return { skipped: "AI not configured" };
+    const deadline = Date.now() + Math.max(60, task.timeoutSeconds - 90) * 1000;
     const users = await db.select({ id: applicantProfiles.userId, titles: applicantProfiles.preferredTitles }).from(applicantProfiles);
     const out: Record<string, unknown> = {};
     // One user's problem (e.g. unreadable data) must not stop matching for everyone else.
     for (const u of users) {
       if (!u.titles.length) continue;
       try {
-        out[u.id] = await matching.evaluateJobsForUser(db, u.id);
+        out[u.id] = await evaluateUntilDone(db, u.id, {}, deadline);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (/rate-limit|no credit|API key/i.test(msg)) throw err; // account-wide: retry the whole run later
@@ -56,7 +70,17 @@ export const handlers: Record<string, Handler> = {
     return out;
   },
 
-  "matching.run_user": async ({ db, task }) => matching.evaluateJobsForUser(db, String(task.payload.userId)),
+  "matching.run_user": async ({ db, task }) => {
+    const userId = String(task.payload.userId);
+    const staleBefore = typeof task.payload.staleBefore === "string" ? new Date(task.payload.staleBefore) : undefined;
+    const deadline = Date.now() + Math.max(60, task.timeoutSeconds - 90) * 1000;
+    const r = await evaluateUntilDone(db, userId, { staleBefore }, deadline);
+    if (r.more) {
+      // Out of time but jobs remain: continue in a fresh task.
+      await queue.enqueue(db, { kind: "matching.run_user", userId, payload: task.payload, timeoutSeconds: task.timeoutSeconds });
+    }
+    return r;
+  },
 
   "system.ping": async () => ({ pong: new Date().toISOString() }),
 

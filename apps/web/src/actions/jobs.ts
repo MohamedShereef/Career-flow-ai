@@ -19,10 +19,16 @@ export async function runDiscoveryAction(_s: ActionState, _fd: FormData): Promis
 export async function reindexAction(_s: ActionState, _fd: FormData): Promise<ActionState> {
   const user = await requireUser();
   return runAction(async () => {
-    const n = await matching.reindexUser(db(), user.id);
-    await queue.enqueue(db(), { kind: "matching.run_user", userId: user.id, payload: { userId: user.id }, dedupeKey: `matching:user:${user.id}` });
+    const { count, staleBefore } = await matching.reindexUser(db(), user.id);
+    await queue.enqueue(db(), {
+      kind: "matching.run_user",
+      userId: user.id,
+      payload: { userId: user.id, staleBefore: staleBefore.toISOString() },
+      dedupeKey: `matching:reindex:${user.id}`,
+      timeoutSeconds: 900,
+    });
     revalidatePath("/jobs");
-    return `Re-evaluating ${n} jobs against your current profile. Applications and saved answers are untouched.`;
+    return `Re-scoring ${count} jobs against your current profile. Current results stay on screen and update one by one — refresh in a few minutes.`;
   });
 }
 

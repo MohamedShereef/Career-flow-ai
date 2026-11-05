@@ -68,7 +68,7 @@ export interface MatchRunResult {
   skipped: number;
 }
 
-export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?: number } = {}): Promise<MatchRunResult> {
+export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?: number; staleBefore?: Date } = {}): Promise<MatchRunResult> {
   const limit = opts.limit ?? Number(process.env.MAX_EVALUATIONS_PER_RUN ?? 40);
   const [p, settings, exps, quals, skills, facts] = await Promise.all([
     profile.getProfile(db, userId),
@@ -98,6 +98,7 @@ export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?
                 isNull(jobEvaluations.supersededAt),
                 eq(jobEvaluations.profileVersion, p.profileVersion),
                 sql`${jobEvaluations.jobDescriptionHash} IS NOT DISTINCT FROM ${jobs.descriptionHash}`,
+                opts.staleBefore ? sql`${jobEvaluations.createdAt} >= ${opts.staleBefore.toISOString()}` : undefined,
               ),
             ),
         ),
@@ -224,14 +225,28 @@ export async function evaluateJobsForUser(db: Db, userId: string, opts: { limit?
   return res;
 }
 
-/** Fresh reindex: supersede this user's current evaluations; history and applications untouched. */
+/**
+ * Fresh reindex: every current evaluation made before now counts as stale and is
+ * re-scored. Old results stay visible until each one is replaced, so the list never
+ * empties; history and applications are untouched.
+ */
 export async function reindexUser(db: Db, userId: string) {
-  const r = await db
-    .update(jobEvaluations)
-    .set({ supersededAt: new Date() })
-    .where(and(eq(jobEvaluations.userId, userId), isNull(jobEvaluations.supersededAt)))
-    .returning({ id: jobEvaluations.id });
-  return r.length;
+  const staleBefore = new Date();
+  const [r] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(jobEvaluations)
+    .innerJoin(jobs, eq(jobs.id, jobEvaluations.jobId))
+    .where(and(eq(jobEvaluations.userId, userId), isNull(jobEvaluations.supersededAt), eq(jobs.status, "active")));
+  return { count: r?.n ?? 0, staleBefore };
+}
+
+/** True while a scoring run that covers this user is queued or running. */
+export async function matchingInProgress(db: Db, userId: string) {
+  const r = await db.execute(
+    sql`SELECT 1 FROM tasks WHERE status IN ('queued','running') AND run_at <= now() + interval '5 minutes'
+        AND (kind = 'matching.run_all' OR (kind = 'matching.run_user' AND payload->>'userId' = ${userId})) LIMIT 1`,
+  );
+  return r.rows.length > 0;
 }
 
 export async function listMatches(db: Db, userId: string, decision?: "recommended" | "rejected" | "needs_review") {

@@ -22,7 +22,7 @@ export default async function Jobs({ searchParams }: { searchParams: Promise<{ t
   const user = await requireUser();
   const sp = await searchParams;
   const tab = (TABS.some(([k]) => k === sp.tab) ? sp.tab : "recommended") as (typeof TABS)[number][0];
-  const [counts, aiReady] = await Promise.all([matching.matchCounts(db(), user.id), Promise.resolve(ai.aiConfigured())]);
+  const [counts, aiReady, scoring] = await Promise.all([matching.matchCounts(db(), user.id), Promise.resolve(ai.aiConfigured()), matching.matchingInProgress(db(), user.id)]);
   const rows = tab === "tailor" ? [] : await matching.listMatches(db(), user.id, tab);
   const tailored = tab === "tailor" ? await tailor.listTailorings(db(), user.id) : [];
 
@@ -38,6 +38,7 @@ export default async function Jobs({ searchParams }: { searchParams: Promise<{ t
           </div>
         }
       />
+      {aiReady && scoring && <p className="mb-4 rounded-lg bg-brand-50 p-3 text-sm text-brand-700">Scoring jobs against your profile now — results appear one by one. Refresh in a minute or two.</p>}
       {!aiReady && <p className="mb-4 rounded-lg bg-attention-50 p-3 text-sm text-attention">The AI engine isn't connected, so jobs are collected but not scored yet.</p>}
       <div className="mb-6 flex gap-1 overflow-x-auto border-b border-line">
         {TABS.map(([k, label]) => (

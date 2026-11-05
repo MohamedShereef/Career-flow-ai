@@ -144,11 +144,16 @@ describe("matching", () => {
     // Nothing new to evaluate on a second pass
     expect((await matching.evaluateJobsForUser(db, user.id)).evaluated).toBe(0);
 
-    // Reindex supersedes but keeps history
-    expect(await matching.reindexUser(db, user.id)).toBe(4);
+    // Reindex keeps current results visible until each is replaced, and keeps history
+    const { count, staleBefore } = await matching.reindexUser(db, user.id);
+    expect(count).toBe(4);
+    expect(await matching.listMatches(db, user.id)).toHaveLength(4);
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await matching.evaluateJobsForUser(db, user.id, { staleBefore })).evaluated).toBe(4);
+    expect(await matching.listMatches(db, user.id)).toHaveLength(4);
     const all = await db.select().from(jobEvaluations).where(eq(jobEvaluations.userId, user.id));
-    expect(all).toHaveLength(4);
-    expect((await matching.evaluateJobsForUser(db, user.id)).evaluated).toBe(4);
+    expect(all).toHaveLength(8);
+    expect((await matching.evaluateJobsForUser(db, user.id, { staleBefore })).evaluated).toBe(0);
   });
 });
 
