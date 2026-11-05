@@ -58,7 +58,7 @@ export interface FormField {
   accept?: string | null;
 }
 
-export type Blocker = { kind: "captcha" | "login_required" | "form_missing" | "unsupported_ats" | "navigation_timeout" | "fill_failed"; detail: string };
+export type Blocker = { kind: "captcha" | "login_required" | "form_missing" | "unsupported_ats" | "navigation_timeout" | "fill_failed" | "job_board"; detail: string };
 
 export interface FormSnapshot {
   url: string;
@@ -345,6 +345,21 @@ export async function loadFile(db: Executor, documentId: string) {
 
 export const SUPPORTED_ATS = ["greenhouse", "lever", "ashby", "workable", "smartrecruiters", "career_site"] as const;
 
+/** Sites that repost jobs. Their pages rarely hold the employer's form; we follow their Apply link instead. */
+const JOB_BOARD_HOSTS =
+  /(^|\.)(indeed\.[a-z.]+|glassdoor\.[a-z.]+|bayt\.com|naukrigulf\.com|gulftalent\.com|recruit\.net|jooble\.org|talent\.com|jobrapido\.com|whatjobs\.com|adzuna\.[a-z.]+|careerjet\.[a-z.]+|jobsora\.com|simplyhired\.[a-z.]+|ziprecruiter\.[a-z.]+|monster\.[a-z.]+|drjobpro\.com|drjob\.[a-z.]+|akhtaboot\.com|wuzzuf\.net|tanqeeb\.com|laimoon\.com|expatriates\.com|dubizzle\.com|jobleads\.com|lensa\.com|learn4good\.com|jobtome\.com|jobted\.[a-z.]+|neuvoo\.[a-z.]+|jora\.com|mourjan\.com|founditgulf\.com|monstergulf\.com|naukri\.com|shine\.com|xpatjobs\.[a-z.]+|ksa-jobs\.com|saudijobs\.[a-z.]+|jobzmall\.com|ladders\.com|dice\.com|google\.com)$/;
+
+export function isJobBoardUrl(url: string) {
+  const k = atsFromUrl(url);
+  return k === "job_board" || k === "linkedin";
+}
+
+/** The link the agent should use: one the user pasted for this application wins over the discovered one. */
+export function applyUrlFor(app: { checkpointData: unknown }, job: { applyUrl: string }) {
+  const override = (app.checkpointData as { applyUrl?: string } | null)?.applyUrl;
+  return override || job.applyUrl;
+}
+
 /** Best guess of the application system from the link. */
 export function atsFromUrl(url: string): string {
   let h = "";
@@ -361,11 +376,12 @@ export function atsFromUrl(url: string): string {
   if (/myworkdayjobs\.com$|workday\.com$/.test(h)) return "workday";
   if (/successfactors\.|jobs2web\.com$|sapsf\./.test(h)) return "successfactors";
   if (/taleo\.net$|oraclecloud\.com$/.test(h)) return "oracle";
-  if (/linkedin\.com$|indeed\.|bayt\.com$|glassdoor\.|naukrigulf\.com$|gulftalent\.com$/.test(h)) return "job_board";
+  if (/(^|\.)linkedin\.com$/.test(h)) return "linkedin";
+  if (JOB_BOARD_HOSTS.test(h)) return "job_board";
   return "career_site";
 }
 
-export async function startAutoApply(db: Db, userId: string, input: { jobId: string; tailoringId?: string | null; origin?: "user" | "autopilot" }) {
+export async function startAutoApply(db: Db, userId: string, input: { jobId: string; tailoringId?: string | null; origin?: "user" | "autopilot"; applyUrl?: string | null }) {
   const settings = await getSettings(db, userId);
   if (!settings.automationConsentAt) throw new AppError("no_consent", "Turn on “Let CareerFlow apply for me” in Settings → Consent first.");
   const [job] = await db.select().from(jobs).where(eq(jobs.id, input.jobId));
@@ -381,13 +397,25 @@ export async function startAutoApply(db: Db, userId: string, input: { jobId: str
   if (!t?.cvDocumentId) throw new AppError("no_cv", "Tailor your CV for this job first.");
   if (!t.approvedAt && input.origin !== "autopilot") throw new AppError("not_approved", "Approve the tailored CV first.");
 
-  const ats = atsFromUrl(job.applyUrl);
+  let applyUrl: string | null = null;
+  if (input.applyUrl) {
+    try {
+      const u = new URL(input.applyUrl.trim());
+      if (!/^https?:$/.test(u.protocol)) throw new Error();
+      applyUrl = u.toString();
+    } catch {
+      throw new AppError("invalid_url", "Paste the full link to the employer's application page (starting with https://).");
+    }
+    if (atsFromUrl(applyUrl) === "linkedin") throw new AppError("linkedin", "CareerFlow doesn't apply through LinkedIn. Paste the employer's own careers-site link.");
+  }
+  const ats = atsFromUrl(applyUrl ?? job.applyUrl);
+  const cpData = { tailoringId: t.id, origin: input.origin ?? "user", ats, ...(applyUrl ? { applyUrl } : {}) };
   const [app] = await db
     .insert(applications)
-    .values({ userId, jobId: job.id, employerKey: job.employerKey, status: "processing", tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "queued_prepare", checkpointData: { tailoringId: t.id, origin: input.origin ?? "user", ats } })
+    .values({ userId, jobId: job.id, employerKey: job.employerKey, status: "processing", tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "queued_prepare", checkpointData: cpData })
     .onConflictDoUpdate({
       target: [applications.userId, applications.jobId],
-      set: { status: "processing", statusReason: null, tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "queued_prepare", checkpointData: { tailoringId: t.id, origin: input.origin ?? "user", ats }, updatedAt: new Date() },
+      set: { status: "processing", statusReason: null, tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "queued_prepare", checkpointData: cpData, updatedAt: new Date() },
     })
     .returning();
   if (["submitted_unverified", "confirmed_by_email", "interview"].includes(app!.status)) throw new AppError("already_applied", "You already applied to this job.");
@@ -424,10 +452,11 @@ export async function loadContext(db: Db, applicationId: string) {
 // ───────────────────────── Worker → state transitions ─────────────────────────
 
 const ERROR_TEXT: Record<Blocker["kind"], string> = {
-  captcha: "The employer's page shows a CAPTCHA (a robot check). CareerFlow doesn't bypass those — open the page and apply with your CV.",
+  captcha: "The page shows a robot check (CAPTCHA / “verify you are human”). CareerFlow doesn't bypass those. Open it yourself and apply with your CV — or paste the employer's own application link below.",
   login_required: "This employer asks you to sign in or create an account before applying. Open the page, sign in, and apply with your CV.",
   form_missing: "We couldn't find an application form on the employer's page. Open it and apply with your CV.",
   unsupported_ats: "This application system isn't supported for automatic filling yet. Open the page and apply with your CV.",
+  job_board: "This link goes to a job site that reposts jobs, not the employer's own application page, and it doesn't link through to one. Find the job on the employer's careers site and paste that link below — CareerFlow continues from there.",
   navigation_timeout: "The employer's page didn't load. We'll try again later.",
   fill_failed: "Some fields on the employer's form couldn't be filled automatically. Open the page and apply with your CV.",
 };
@@ -435,7 +464,7 @@ const ERROR_TEXT: Record<Blocker["kind"], string> = {
 export async function recordBlocker(db: Db, applicationId: string, b: Blocker, taskId?: string) {
   const [a] = await db.select().from(applications).where(eq(applications.id, applicationId));
   if (!a) return;
-  const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch" } as const)[b.kind];
+  const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch", job_board: "unsupported_ats" } as const)[b.kind];
   const [err] = await db
     .insert(errorRecords)
     .values({ userId: a.userId, applicationId, taskId: taskId ?? null, stage: "prepare", category, rootCauseKey: `${category}:${a.employerKey}`, userMessage: ERROR_TEXT[b.kind], technicalDetail: { detail: b.detail } })
@@ -713,6 +742,7 @@ export async function autopilotCandidates(db: Db, userId: string, limit: number)
     )
     .orderBy(desc(jobEvaluations.score))
     .limit(limit * 4);
+  // Job-board-only links rarely reach a form; leave those for the user.
   return rows.filter((r) => (SUPPORTED_ATS as readonly string[]).includes(atsFromUrl(r.j.applyUrl)) && !!r.j.description).slice(0, limit);
 }
 
@@ -731,4 +761,13 @@ export async function setAutopilot(db: Db, userId: string, input: { prepare?: bo
   await db.update(automationSettings).set(set).where(eq(automationSettings.userId, userId));
   await audit(db, { userId, actor: "user", action: "autopilot.updated", metadata: input });
   if (input.prepare) await queue.enqueue(db, { kind: "autopilot.run", userId, dedupeKey: "autopilot:manual", timeoutSeconds: 1200 });
+}
+
+/** Switch this application to the employer's own page (found by CareerFlow or pasted by the user). */
+export async function useEmployerLink(db: Db, applicationId: string, url: string, note: string) {
+  const [a] = await db.select().from(applications).where(eq(applications.id, applicationId));
+  if (!a) return;
+  const data = { ...((a.checkpointData as Record<string, unknown> | null) ?? {}), applyUrl: url, ats: atsFromUrl(url) };
+  await db.update(applications).set({ checkpointData: data, updatedAt: new Date() }).where(eq(applications.id, applicationId));
+  await event(db, a.userId, applicationId, "browser_action", "prepare", note, { url });
 }

@@ -342,6 +342,8 @@ export const googleJobs: Adapter = async (src, ctx) => {
         sourceUrl: apply,
         applyUrl: apply,
         atsKind: `google_jobs${j.via ? `:${j.via.replace(/^via\s+/i, "")}` : ""}`.slice(0, 60),
+        // Every place Google found this job: used later to find the employer's own page.
+        raw: { applyOptions: (j.apply_options ?? []).map((o) => o.link).filter(Boolean).slice(0, 10) },
       });
     }
   }
@@ -378,6 +380,7 @@ export const jsearch: Adapter = async (src, ctx) => {
         salaryMin: j.job_min_salary ?? null,
         salaryMax: j.job_max_salary ?? null,
         salaryCurrency: j.job_salary_currency ?? null,
+        raw: { applyOptions: (j.apply_options ?? []).map((o) => o.apply_link).filter(Boolean).slice(0, 10) },
       });
     }
   }

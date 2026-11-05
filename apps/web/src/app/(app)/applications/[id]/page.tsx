@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AppError, autoapply } from "@careerflow/core";
-import { approveApplicationAction, cancelApplicationAction, resolveUncertainAction, retryApplicationAction } from "@/actions/applications";
+import { approveApplicationAction, cancelApplicationAction, resolveUncertainAction, retryApplicationAction, useApplyLinkAction } from "@/actions/applications";
 import { ActionForm, SubmitButton } from "@/components/forms";
-import { Badge, Card, PageHeader, fmtDate } from "@/components/ui";
+import { Badge, Card, Field, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 
@@ -53,13 +53,17 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
   const working = app.status === "processing";
   const uncertain = app.checkpoint === "uncertain";
   const canRetry = app.status === "needs_user_action" && !uncertain && d.questions.length === 0;
+  const applyUrl = autoapply.applyUrlFor(app, job);
+  let applyHost = "";
+  try { applyHost = new URL(applyUrl).hostname.replace(/^www\./, ""); } catch {}
+  const onBoard = autoapply.isJobBoardUrl(applyUrl);
 
   return (
     <>
       {working && <meta httpEquiv="refresh" content="20" />}
       <PageHeader
         title={`${job.title} · ${job.companyName}`}
-        subtitle={<>Started {fmtDate(app.createdAt)} · <a className="text-brand-600 hover:underline" href={job.applyUrl} target="_blank" rel="noopener">Employer's page ↗</a></>}
+        subtitle={<>Started {fmtDate(app.createdAt)} · <a className="text-brand-600 hover:underline" href={applyUrl} target="_blank" rel="noopener">{onBoard ? `Posting on ${applyHost}` : "Employer's page"} ↗</a></>}
         actions={<Link href="/applications" className="btn-secondary">All applications</Link>}
       />
       <div className="mb-6 flex flex-wrap items-center gap-3">
@@ -99,8 +103,20 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
       )}
 
       {canRetry && (
+        <div className="mb-6">
+          <Card title="Have the employer's own application link?" description={`Search “${job.title} ${job.companyName} careers”, open the job on ${job.companyName}'s own site, and paste the link of the page with the Apply form. CareerFlow continues from there.`}>
+            <ActionForm action={useApplyLinkAction} className="flex flex-wrap items-end gap-3">
+              <input type="hidden" name="applicationId" value={app.id} />
+              <div className="min-w-72 flex-1"><Field label="Employer's application link" name="applyUrl" type="url" placeholder="https://careers.company.com/…" required /></div>
+              <SubmitButton pendingText="Starting…">Use this link</SubmitButton>
+            </ActionForm>
+          </Card>
+        </div>
+      )}
+
+      {canRetry && (
         <div className="mb-6 flex flex-wrap items-center gap-3">
-          <a className="btn-primary" href={job.applyUrl} target="_blank" rel="noopener">Open the employer's page ↗</a>
+          <a className="btn-primary" href={applyUrl} target="_blank" rel="noopener">Open {onBoard ? applyHost : "the employer's page"} ↗</a>
           {app.tailoredCvDocumentId && <a className="btn-secondary" href={`/api/documents/${app.tailoredCvDocumentId}`} target="_blank">Download the CV</a>}
           <ActionForm action={retryApplicationAction}><input type="hidden" name="applicationId" value={app.id} /><SubmitButton className="btn-secondary" pendingText="Starting…">Try automatic again</SubmitButton></ActionForm>
         </div>

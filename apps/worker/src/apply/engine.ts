@@ -5,9 +5,9 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 import type { autoapply } from "@careerflow/core";
-import { EXTRACT, FIND_APPLY, FIND_SUBMIT, OPTION_INDEX, OUTCOME, READBACK } from "./page-scripts";
+import { BOT_CHECK, EXTRACT, FIND_APPLY, FIND_SUBMIT, OPTION_INDEX, OUTCOME, READBACK } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -60,19 +60,39 @@ interface RawSnapshot {
 const looksLikeApplication = (fields: FormSnapshot["fields"]) =>
   fields.some((f) => f.type === "file") || (fields.some((f) => f.type === "email" || /e-?mail/i.test(f.label)) && fields.length >= 3);
 
+/** Extract from the page and every embedded frame (career sites often embed the ATS form in an iframe). */
+async function extractBest(page: Page): Promise<{ frame: Frame; raw: RawSnapshot; frames: number }> {
+  const main = page.mainFrame();
+  let best = { frame: main, raw: (await main.evaluate(EXTRACT)) as RawSnapshot };
+  const frames = page.frames().filter((f) => f !== main && f.url() && !/^about:|recaptcha|hcaptcha|challenges\.cloudflare|googletagmanager|doubleclick|youtube/.test(f.url()));
+  if (!looksLikeApplication(best.raw.fields)) {
+    for (const f of frames) {
+      const raw = (await f.evaluate(EXTRACT).catch(() => null)) as RawSnapshot | null;
+      if (raw && looksLikeApplication(raw.fields)) {
+        best = { frame: f, raw: { ...raw, captcha: raw.captcha || best.raw.captcha } };
+        break;
+      }
+    }
+  }
+  return { ...best, frames: frames.length };
+}
+
 /** Open the apply link and return the application form, following an "Apply" button if needed. */
-export async function openForm(s: Session, url: string, atsKind: string): Promise<{ snapshot: FormSnapshot; page: Page }> {
+export async function openForm(s: Session, url: string, atsKind: string): Promise<{ snapshot: FormSnapshot; page: Page; form: Frame }> {
   let page = s.page;
+  let status = 0;
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    const res = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    status = res?.status() ?? 0;
   } catch (err) {
-    return { page, snapshot: { url, atsKind, pageTitle: "", fields: [], blockers: [{ kind: "navigation_timeout", detail: String(err).slice(0, 200) }] } };
+    return { page, form: page.mainFrame(), snapshot: { url, atsKind, pageTitle: "", fields: [], blockers: [{ kind: "navigation_timeout", detail: String(err).slice(0, 200) }] } };
   }
   await settle(page);
   await dismissCookies(page);
 
-  let raw = (await page.evaluate(EXTRACT)) as RawSnapshot;
-  for (let hop = 0; hop < 2 && !looksLikeApplication(raw.fields) && !raw.password && !raw.captcha; hop++) {
+  let found = await extractBest(page);
+  const visited: string[] = [page.url()];
+  for (let hop = 0; hop < 3 && !looksLikeApplication(found.raw.fields) && !found.raw.password && !found.raw.captcha; hop++) {
     const n = (await page.evaluate(FIND_APPLY)) as number;
     if (!n) break;
     const target = page.locator('[data-cf-apply="0"]');
@@ -82,14 +102,21 @@ export async function openForm(s: Session, url: string, atsKind: string): Promis
     if (newPage) page = newPage;
     await settle(page);
     await dismissCookies(page);
-    raw = (await page.evaluate(EXTRACT)) as RawSnapshot;
+    found = await extractBest(page);
+    visited.push(page.url());
   }
 
+  const { raw, frame } = found;
+  const host = (u: string) => { try { return new URL(u).hostname; } catch { return ""; } };
+  const formAts = frame === page.mainFrame() ? atsKind : (await import("@careerflow/core")).autoapply.atsFromUrl(frame.url());
   const blockers: FormSnapshot["blockers"] = [];
-  if (raw.captcha) blockers.push({ kind: "captcha", detail: "CAPTCHA widget on the page" });
-  else if (raw.password && !looksLikeApplication(raw.fields)) blockers.push({ kind: "login_required", detail: "Sign-in form shown" });
-  else if (!looksLikeApplication(raw.fields)) blockers.push({ kind: "form_missing", detail: `${raw.fields.length} fields, none look like an application form` });
-  return { page, snapshot: { url: page.url(), atsKind, pageTitle: raw.title, fields: raw.fields, blockers } };
+  const where = `pages: ${[...new Set(visited.map(host))].join(" → ")}; title: "${raw.title.slice(0, 80)}"; frames: ${found.frames}; fields: ${raw.fields.length}`;
+  const botCheck = !looksLikeApplication(raw.fields) && ((await page.evaluate(BOT_CHECK).catch(() => false)) as boolean || status === 403 || status === 429);
+  if (raw.captcha) blockers.push({ kind: "captcha", detail: `CAPTCHA widget on the page (${where})` });
+  else if (botCheck) blockers.push({ kind: "captcha", detail: `Robot check / blocked automated access (HTTP ${status || "?"}; ${where})` });
+  else if (raw.password && !looksLikeApplication(raw.fields)) blockers.push({ kind: "login_required", detail: `Sign-in form shown (${where})` });
+  else if (!looksLikeApplication(raw.fields)) blockers.push({ kind: "form_missing", detail: `No application form found (${where}). Fields seen: ${raw.fields.slice(0, 8).map((f) => f.label || f.type).join(", ")}` });
+  return { page, form: frame, snapshot: { url: page.url(), atsKind: formAts, pageTitle: raw.title, fields: raw.fields, blockers } };
 }
 
 export interface Files {
@@ -108,10 +135,10 @@ export async function materialize(s: Session, file: { bytes: Buffer; filename: s
 const eqText = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
 /** Fill every planned answer, then read the form back. Returns the fields that didn't take. */
-export async function fill(page: Page, answers: PlannedAnswer[], files: Files): Promise<string[]> {
+export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files): Promise<string[]> {
   const problems: string[] = [];
   for (const a of answers) {
-    const loc = page.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
+    const loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
     try {
       const v = a.value;
       if (v.kind === "file") {
@@ -122,7 +149,7 @@ export async function fill(page: Page, answers: PlannedAnswer[], files: Files): 
         await loc.first().selectOption({ label: v.value });
       } else if ((a.type === "radio" || a.type === "checkbox_group") && (v.kind === "text" || v.kind === "multi")) {
         for (const want of v.kind === "text" ? [v.value] : v.values) {
-          const i = (await page.evaluate(`${OPTION_INDEX}(${JSON.stringify([a.key, want])})`)) as number;
+          const i = (await form.evaluate(`${OPTION_INDEX}(${JSON.stringify([a.key, want])})`)) as number;
           if (i < 0) throw new Error(`option "${want}" not found`);
           await loc.nth(i).check({ force: true });
         }
@@ -142,7 +169,7 @@ export async function fill(page: Page, answers: PlannedAnswer[], files: Files): 
     }
   }
 
-  const back = (await page.evaluate(`${READBACK}(${JSON.stringify(answers.map((a) => a.key))})`)) as Record<string, unknown>;
+  const back = (await form.evaluate(`${READBACK}(${JSON.stringify(answers.map((a) => a.key))})`)) as Record<string, unknown>;
   for (const a of answers) {
     const got = back[a.key];
     const v = a.value;
@@ -176,19 +203,24 @@ export interface SubmitResult {
  * when the form is still there with visible errors (or a challenge), i.e. the
  * employer clearly did not receive it.
  */
-export async function submit(page: Page): Promise<SubmitResult> {
-  const found = (await page.evaluate(FIND_SUBMIT)) as boolean;
+export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
+  const found = (await form.evaluate(FIND_SUBMIT)) as boolean;
   if (!found) return { outcome: "not_submitted", url: page.url(), summary: "No Submit button found", errors: ["No Submit button found on the form"], screenshot: await screenshot(page).catch(() => null) };
   const before = page.url();
   // Some forms already say "thank you for your interest" above the form; only a change counts.
-  const pre = (await page.evaluate(OUTCOME).catch(() => null)) as { confirmed: boolean } | null;
-  await page.locator("[data-cf-submit]").first().click({ timeout: 10_000 });
+  const pre = (await form.evaluate(OUTCOME).catch(() => null)) as { confirmed: boolean } | null;
+  await form.locator("[data-cf-submit]").first().click({ timeout: 10_000 });
 
   type Outcome = { confirmed: boolean; confirmation: string; errors: string[]; challenge: boolean; submitStill: boolean };
   let last = null as Outcome | null;
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
-    last = (await page.evaluate(OUTCOME).catch(() => null)) as Outcome | null;
+    last = (await form.evaluate(OUTCOME).catch(() => null)) as Outcome | null;
+    // The confirmation may appear on the outer page instead of inside the embedded form.
+    if (form !== page.mainFrame() && !last?.confirmed) {
+      const outer = (await page.evaluate(OUTCOME).catch(() => null)) as Outcome | null;
+      if (outer?.confirmed) last = { ...outer, submitStill: last?.submitStill ?? false };
+    }
     if (!last) continue;
     if (pre?.confirmed && last.confirmed && last.submitStill) last.confirmed = false;
     if (last.confirmed || last.challenge) break;

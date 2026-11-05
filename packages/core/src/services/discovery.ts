@@ -199,6 +199,7 @@ export async function runSource(db: Db, sourceId: string, trigger: "scheduled" |
         sourceUrl: job.sourceUrl,
         applyUrl: job.applyUrl,
         postedAt: job.postedAt,
+        ...(job.raw !== undefined ? { raw: job.raw } : {}),
         status: "active" as const,
         lastSeenAt: new Date(),
         closedAt: null,

@@ -1,4 +1,4 @@
-import { AppError, autoapply, queue, settings, tailor } from "@careerflow/core";
+import { AppError, autoapply, employerLink, queue, settings, tailor } from "@careerflow/core";
 import { applications, automationSettings } from "@careerflow/db";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Handler, HandlerContext } from "../handlers";
@@ -34,14 +34,24 @@ const prepare: Handler = async (ctx) => {
   const { app, job, ctx: planCtx } = await autoapply.loadContext(ctx.db, applicationId);
   if (app.status !== "processing") return { skipped: `status ${app.status}` };
 
-  const ats = autoapply.atsFromUrl(job.applyUrl);
+  let startUrl = autoapply.applyUrlFor(app, job);
+  // Job boards often show robot checks and don't host the form: look for the employer's own posting first.
+  if (autoapply.isJobBoardUrl(startUrl)) {
+    const found = await employerLink.findEmployerLink(ctx.db, job).catch(() => null);
+    if (found) {
+      const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } };
+      await autoapply.useEmployerLink(ctx.db, app.id, found.url, `Found this job on ${job.companyName}'s own site (${host(found.url)}) — applying there instead of ${host(startUrl)}.`);
+      startUrl = found.url;
+    }
+  }
+  const ats = autoapply.atsFromUrl(startUrl);
+  if (ats === "linkedin") {
+    await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: "LinkedIn link — CareerFlow doesn't automate LinkedIn" }, ctx.task.id);
+    return { blocked: "linkedin" };
+  }
   if (ACCOUNT_SYSTEMS.has(ats)) {
     await autoapply.recordBlocker(ctx.db, app.id, { kind: "login_required", detail: `${ats} requires a candidate account` }, ctx.task.id);
     return { blocked: "login_required" };
-  }
-  if (ats === "job_board") {
-    await autoapply.recordBlocker(ctx.db, app.id, { kind: "unsupported_ats", detail: "Link points to a job board, not the employer's form" }, ctx.task.id);
-    return { blocked: "job_board" };
   }
 
   const q = await quota(ctx, app.userId, "inspections");
@@ -53,8 +63,22 @@ const prepare: Handler = async (ctx) => {
 
   const s = await openSession();
   try {
-    const { snapshot, page } = await openForm(s, job.applyUrl, ats);
-    ctx.log("apply.form", { applicationId, fields: snapshot.fields.length, blockers: snapshot.blockers.map((b) => b.kind) });
+    const { snapshot, page, form } = await openForm(s, startUrl, ats);
+    ctx.log("apply.form", { applicationId, url: snapshot.url, fields: snapshot.fields.length, blockers: snapshot.blockers.map((b) => b.kind) });
+    // Where did following the links end up?
+    const landed = autoapply.atsFromUrl(snapshot.url);
+    if (landed === "linkedin") {
+      await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: `Ended on LinkedIn (${snapshot.url})` }, ctx.task.id);
+      return { blocked: "linkedin" };
+    }
+    if (ACCOUNT_SYSTEMS.has(landed) && snapshot.blockers.length) {
+      await autoapply.recordBlocker(ctx.db, app.id, { kind: "login_required", detail: `Employer uses ${landed} (${snapshot.url})` }, ctx.task.id);
+      return { blocked: "login_required" };
+    }
+    if (snapshot.blockers[0]?.kind === "form_missing" && landed === "job_board") {
+      await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: snapshot.blockers[0].detail }, ctx.task.id);
+      return { blocked: "job_board" };
+    }
     if (snapshot.blockers.length) {
       const b = snapshot.blockers[0]!;
       if (b.kind === "navigation_timeout") throw new Error(b.detail); // retry later
@@ -70,7 +94,7 @@ const prepare: Handler = async (ctx) => {
     }
 
     const files = await loadFiles(ctx, s, app);
-    const problems = await fill(page, plan.answers, files);
+    const problems = await fill(form, page, plan.answers, files);
     if (problems.length) {
       await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: problems.join(" | ") }, ctx.task.id);
       return { blocked: "fill_failed", problems };
@@ -111,7 +135,7 @@ const submitHandler: Handler = async (ctx) => {
   const s = await openSession();
   let clicked = false;
   try {
-    const { snapshot, page } = await openForm(s, approved.data.url || job.applyUrl, approved.data.atsKind);
+    const { snapshot, page, form } = await openForm(s, approved.data.url || autoapply.applyUrlFor(app, job), approved.data.atsKind);
     if (snapshot.blockers.length) {
       const b = snapshot.blockers[0]!;
       if (b.kind === "navigation_timeout") throw new Error(b.detail);
@@ -130,7 +154,7 @@ const submitHandler: Handler = async (ctx) => {
     await autoapply.verifyBeforeSubmit(ctx.db, applicationId, approvalId, answers);
 
     const files = await loadFiles(ctx, s, app);
-    const problems = await fill(page, answers, files);
+    const problems = await fill(form, page, answers, files);
     if (problems.length) {
       await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: problems.join(" | ") }, ctx.task.id);
       return { blocked: "fill_failed", problems };
@@ -140,12 +164,12 @@ const submitHandler: Handler = async (ctx) => {
     await ctx.checkpoint({ irreversible: true, stage: "submit_clicked", at: new Date().toISOString() });
     await autoapply.reserveSubmission(ctx.db, applicationId, approvalId);
     clicked = true;
-    const r = await submit(page);
+    const r = await submit(form, page);
     await autoapply.recordOutcome(ctx.db, { applicationId, approvalId, outcome: r.outcome, url: r.url, summary: r.summary, screenshot: r.screenshot, errors: r.errors });
     return { outcome: r.outcome };
   } catch (err) {
     if (clicked) {
-      await autoapply.recordOutcome(ctx.db, { applicationId, approvalId, outcome: "uncertain", url: job.applyUrl, summary: `Error after Submit: ${String(err).slice(0, 200)}` }).catch(() => undefined);
+      await autoapply.recordOutcome(ctx.db, { applicationId, approvalId, outcome: "uncertain", url: autoapply.applyUrlFor(app, job), summary: `Error after Submit: ${String(err).slice(0, 200)}` }).catch(() => undefined);
       return { outcome: "uncertain" };
     }
     if (err instanceof AppError) {

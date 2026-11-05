@@ -93,7 +93,37 @@ describe("autopilot switches", () => {
     expect(autoapply.atsFromUrl("https://jobs.lever.co/acme/1")).toBe("lever");
     expect(autoapply.atsFromUrl("https://kbr.wd5.myworkdayjobs.com/KBR_Careers/job/1")).toBe("workday");
     expect(autoapply.atsFromUrl("https://neom.jobs2web.com/job/1")).toBe("successfactors");
-    expect(autoapply.atsFromUrl("https://www.linkedin.com/jobs/view/1")).toBe("job_board");
+    expect(autoapply.atsFromUrl("https://www.linkedin.com/jobs/view/1")).toBe("linkedin");
+    expect(autoapply.atsFromUrl("https://www.recruit.net/job/x")).toBe("job_board");
     expect(autoapply.atsFromUrl("https://careers.example.com/jobs/1")).toBe("career_site");
+  });
+});
+
+describe("employer link finder", () => {
+  it("prefers the employer's own posting over job boards, from listing links or one cached search", async () => {
+    const { employerLink } = await import("../src/index");
+    const { jobs } = await import("@careerflow/db");
+    const db = testDb();
+    const [job] = await db
+      .insert(jobs)
+      .values({ externalId: crypto.randomUUID(), dedupeKey: crypto.randomUUID(), title: "Purchasing Team Leader", companyName: "Johnson Controls Arabia", employerKey: "johnson controls arabia", sourceUrl: "https://www.recruit.net/job/x", applyUrl: "https://www.recruit.net/job/x", raw: { applyOptions: ["https://www.recruit.net/job/x", "https://www.linkedin.com/jobs/view/1"] } })
+      .returning();
+    expect(autoapply.isJobBoardUrl(job!.applyUrl)).toBe(true);
+    let searches = 0;
+    const search = async () => {
+      searches++;
+      return [
+        { link: "https://jooble.org/jdp/123", title: "Purchasing Team Leader - Riyadh" },
+        { link: "https://jci.wd5.myworkdayjobs.com/JCI/job/Riyadh/Purchasing-Team-Leader_WD123", title: "Purchasing Team Leader - Johnson Controls" },
+      ];
+    };
+    const r = await employerLink.findEmployerLink(db, job!, { search });
+    expect(r).toEqual({ url: "https://jci.wd5.myworkdayjobs.com/JCI/job/Riyadh/Purchasing-Team-Leader_WD123", via: "search" });
+    const [again] = await db.select().from(jobs).where((await import("drizzle-orm")).eq(jobs.id, job!.id));
+    expect(await employerLink.findEmployerLink(db, again!, { search })).toMatchObject({ via: "search" });
+    expect(searches).toBe(1); // cached
+
+    expect(employerLink.looksLikeEmployerPosting("https://careers.otherco.com/job/1", "Purchasing Team Leader", "Johnson Controls Arabia")).toBe(false);
+    expect(employerLink.looksLikeEmployerPosting("https://boards.greenhouse.io/johnsoncontrols/jobs/1", "Purchasing Team Leader", "Johnson Controls Arabia", "Purchasing Team Leader at Johnson Controls")).toBe(true);
   });
 });

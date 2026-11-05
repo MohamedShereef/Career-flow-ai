@@ -108,11 +108,22 @@ export const EXTRACT = String.raw`(() => {
 
 /** Find "Apply" buttons/links on a job page that doesn't show the form yet. */
 export const FIND_APPLY = String.raw`(() => {
-  const re = /^\s*(apply( now| for this (job|position|role))?|i'?m interested|start (your )?application|submit (an )?application|تقدم|قدم الآن|التقديم)\s*$/i;
-  const els = [...document.querySelectorAll("a, button, [role=button]")].filter((e) => {
+  const re = /^\s*(apply\b[\w\s'’-]{0,30}|i'?m interested|interested\?|start (your |an )?application|submit (an |your )?(application|cv|resume)|send (your )?(cv|resume)|quick apply|تقدم[\s\S]{0,15}|قدم الآن|التقديم[\s\S]{0,15})\s*$/i;
+  const bad = /\b(linkedin|indeed|with google|with facebook|sign in|log in|filter|search|save|share|alert)\b/i;
+  const label = (e) => (e.innerText || e.getAttribute("aria-label") || e.getAttribute("title") || e.value || "").replace(/\s+/g, " ").trim();
+  const seen = new Set();
+  const els = [...document.querySelectorAll("a, button, [role=button], input[type=button], input[type=submit]")].filter((e) => {
     const r = e.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && re.test((e.innerText || e.getAttribute("aria-label") || "").trim());
+    if (!(r.width > 0 && r.height > 0)) return false;
+    const t = label(e);
+    const href = e.getAttribute("href") || "";
+    const ok = (re.test(t) && !bad.test(t)) || (/\/apply(\b|\/|\?|$)/i.test(href) && t.length < 40 && !bad.test(t));
+    if (!ok || seen.has(href + t)) return false;
+    seen.add(href + t);
+    return true;
   });
+  // Prefer the exact "Apply" / "Apply now" over longer variants.
+  els.sort((a, b) => label(a).length - label(b).length);
   els.forEach((e, i) => e.setAttribute("data-cf-apply", String(i)));
   return els.length;
 })()`;
@@ -174,4 +185,11 @@ export const OUTCOME = String.raw`(() => {
   const challenge = [...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"], iframe[src*="hcaptcha.com"][src*="challenge"]')].some(vis);
   const submitStill = !!document.querySelector("[data-cf-submit]") && vis(document.querySelector("[data-cf-submit]"));
   return { confirmed: !!m, confirmation: m ? body.slice(Math.max(0, m.index - 40), m.index + 200).replace(/\s+/g, " ").trim() : "", errors: errs, challenge, submitStill };
+})()`;
+
+/** Interstitial "are you human" pages (Cloudflare, Akamai, PerimeterX, DataDome, Imperva). */
+export const BOT_CHECK = String.raw`(() => {
+  const t = (document.title || "") + " " + ((document.body && document.body.innerText) || "").slice(0, 3000);
+  return /just a moment|attention required|verify (that )?you are (a )?human|are you a robot|checking (if the site connection is secure|your browser)|press (&|and) hold|pardon our interruption|access (to this page has been )?denied|request unsuccessful|unusual traffic|security check|enable javascript and cookies to continue/i.test(t)
+    || !!document.querySelector("#challenge-form, #cf-challenge-running, #px-captcha, [id^=sec-if-cpt], iframe[src*='captcha-delivery.com']");
 })()`;

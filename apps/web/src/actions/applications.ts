@@ -84,3 +84,13 @@ export async function autopilotAction(_: ActionState, fd: FormData): Promise<Act
     return on ? (field === "autoSubmit" ? "Autopilot will now submit when every answer is verified." : "Autopilot is on. It picks your best matches every hour.") : "Turned off.";
   });
 }
+
+export async function useApplyLinkAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    const d = await autoapply.getDetail(db(), user.id, str(fd, "applicationId"));
+    await autoapply.startAutoApply(db(), user.id, { jobId: d.job.id, applyUrl: str(fd, "applyUrl") });
+    revalidatePath("/", "layout");
+    return "Got it — opening the employer's page now. This page updates in a minute.";
+  });
+}
