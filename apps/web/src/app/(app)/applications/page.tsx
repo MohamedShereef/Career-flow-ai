@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { desc, eq } from "drizzle-orm";
 import { applications, jobs } from "@careerflow/db";
 import { Badge, EmptyState, PageHeader, fmtDate } from "@/components/ui";
@@ -10,7 +11,7 @@ const LABEL: Record<string, [string, "neutral" | "brand" | "good" | "attention" 
   discovered: ["Discovered", "neutral"],
   matched: ["Matched", "brand"],
   prepared: ["Prepared", "brand"],
-  awaiting_approval: ["Awaiting approval", "attention"],
+  awaiting_approval: ["Waiting for your approval", "attention"],
   processing: ["Processing", "brand"],
   needs_user_action: ["Needs you", "attention"],
   submitted_unverified: ["Submitted · unverified", "neutral"],
@@ -19,7 +20,7 @@ const LABEL: Record<string, [string, "neutral" | "brand" | "good" | "attention" 
   rejected: ["Rejected", "bad"],
   closed: ["Closed", "neutral"],
   failed: ["Failed", "bad"],
-  withdrawn: ["Withdrawn", "neutral"],
+  withdrawn: ["Cancelled", "neutral"],
 };
 
 export default async function Applications({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
@@ -52,7 +53,7 @@ export default async function Applications({ searchParams }: { searchParams: Pro
                 const [label, tone] = LABEL[a.status] ?? [a.status, "neutral"];
                 return (
                   <tr key={a.id}>
-                    <td className="px-4 py-3 font-medium">{title}</td>
+                    <td className="px-4 py-3 font-medium"><Link href={`/applications/${a.id}`} className="text-brand-700 hover:underline">{title}</Link>{a.statusReason && <div className="mt-0.5 line-clamp-2 text-xs font-normal text-muted">{a.statusReason}</div>}</td>
                     <td className="px-4 py-3">{company}</td>
                     <td className="px-4 py-3"><Badge tone={tone}>{label}</Badge></td>
                     <td className="px-4 py-3 text-muted">{fmtDate(a.updatedAt)}</td>

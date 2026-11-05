@@ -12,7 +12,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(id)) return new NextResponse("Not found", { status: 404 });
   try {
-    const r = await applications.prepare(db(), user.id, id);
+    const r = await applications.prepare(db(), user.id, id, null, { opened: true });
     return NextResponse.redirect(r.applyUrl, 303);
   } catch (err) {
     const msg = err instanceof AppError ? err.userMessage : "Something went wrong.";

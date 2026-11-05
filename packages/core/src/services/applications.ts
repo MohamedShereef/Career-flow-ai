@@ -67,7 +67,7 @@ export async function getForTailoring(db: Db, userId: string, tailoringId: strin
 }
 
 /** Step 1: link the approved CV to the job and return the employer's apply link. */
-export async function prepare(db: Db, userId: string, tailoringId: string, pastedUrl?: string | null) {
+export async function prepare(db: Db, userId: string, tailoringId: string, pastedUrl?: string | null, opts: { opened?: boolean } = {}) {
   const [t] = await db.select().from(cvTailorings).where(and(eq(cvTailorings.id, tailoringId), eq(cvTailorings.userId, userId)));
   if (!t) throw notFound("Tailored CV");
   if (!t.approvedAt) throw new AppError("not_approved", "Approve this CV version first.");
@@ -87,13 +87,13 @@ export async function prepare(db: Db, userId: string, tailoringId: string, paste
 
   const [app] = await db
     .insert(applications)
-    .values({ userId, jobId, employerKey: job.employerKey, status: "prepared", tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "opened_apply_page" })
+    .values({ userId, jobId, employerKey: job.employerKey, status: "prepared", tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, checkpoint: "opened_apply_page", checkpointData: { tailoringId: t.id } })
     .onConflictDoUpdate({
       target: [applications.userId, applications.jobId],
       set: { tailoredCvDocumentId: t.cvDocumentId, coverLetterDocumentId: t.coverLetterDocumentId, updatedAt: new Date() },
     })
     .returning();
-  await db.insert(applicationEvents).values({ userId, applicationId: app!.id, kind: "user_action", stage: "prepare", message: "Opened the employer's application page with the approved CV." });
+  await db.insert(applicationEvents).values({ userId, applicationId: app!.id, kind: "user_action", stage: "prepare", message: opts.opened ? "You opened the employer's application page with the approved CV." : "Linked the approved CV to this job's application page." });
   return { applicationId: app!.id, applyUrl: job.applyUrl };
 }
 

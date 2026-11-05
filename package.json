@@ -23,7 +23,8 @@
     "e2e": "node test/e2e/smoke.mjs",
     "admin": "npm run admin -w @careerflow/worker --",
     "e2e:cv": "node test/e2e/cv-flow.mjs",
-    "e2e:discovery": "node test/e2e/discovery-flow.mjs"
+    "e2e:discovery": "node test/e2e/discovery-flow.mjs",
+    "e2e:apply": "node test/e2e/apply-flow.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

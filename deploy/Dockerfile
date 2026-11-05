@@ -15,8 +15,10 @@ RUN APP_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= npm run buil
 
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 CHROME_PATH=/usr/bin/chromium
+# Chromium for filling employer application forms (Debian builds exist for ARM and x86).
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini \
+    chromium fonts-liberation fonts-noto-core fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --uid 10001 app \
  && mkdir -p /data/files && chown app:app /data/files

@@ -97,4 +97,5 @@ export const handlers: Record<string, Handler> = {
 export const systemSchedules = [
   { kind: "maintenance.cleanup", intervalMinutes: 60 },
   { kind: "discovery.run_all", intervalMinutes: Number(process.env.DISCOVERY_INTERVAL_MINUTES ?? 360) },
+  { kind: "autopilot.run", intervalMinutes: Number(process.env.AUTOPILOT_INTERVAL_MINUTES ?? 60) },
 ];

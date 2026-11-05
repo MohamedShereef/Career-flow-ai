@@ -13,7 +13,7 @@ describe("assisted apply", () => {
     const { user } = await makeUser();
     const db = testDb();
     const pdf = await renderCvPdf({ name: "A B", headline: "Buyer", contact: [], summary: "Procurement engineer with experience in construction tenders and supplier negotiation.", highlights: [], experiences: [], qualifications: [], skills: [] });
-    const doc = await documents.uploadDocument(db, user.id, { name: "cv.pdf", bytes: pdf }, "cv_tailored");
+    const doc = await documents.uploadDocument(db, user.id, { name: "cv.pdf", bytes: pdf }, "supporting");
     const [t] = await db
       .insert(cvTailorings)
       .values({ userId: user.id, jobTitle: "Purchasing Team Leader", companyName: "Acme Arabia", jobDescription: "Lead purchasing.", profileVersion: 1, content: {}, cvDocumentId: doc.id })

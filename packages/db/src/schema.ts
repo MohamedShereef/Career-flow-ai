@@ -811,6 +811,9 @@ export const automationSettings = pgTable(
     maxInspectionsPerDay: integer("max_inspections_per_day").notNull().default(15),
     maxBatchSize: integer("max_batch_size").notNull().default(5),
     manualApprovalUntilCount: integer("manual_approval_until_count").notNull().default(5),
+    /** Autopilot: find, tailor and prepare applications on its own (submits still need approval until unlocked). */
+    autopilotEnabled: boolean("autopilot_enabled").notNull().default(false),
+    /** After the first approved applications: submit without asking when every answer is verified. */
     continuousSubmissionEnabled: boolean("continuous_submission_enabled").notNull().default(false),
     matchThreshold: integer("match_threshold").notNull().default(50),
     discoveryIntervalHours: integer("discovery_interval_hours").notNull().default(12),

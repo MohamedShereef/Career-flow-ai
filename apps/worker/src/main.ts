@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { sql } from "drizzle-orm";
 import { createDb } from "@careerflow/db";
-import { handlers } from "./handlers";
+import { applyHandlers } from "./apply/handlers";
+import { handlers as baseHandlers } from "./handlers";
 import { log } from "./log";
 import { Runner } from "./runner";
 
@@ -13,6 +14,7 @@ for (const name of ["DATABASE_URL", "APP_ENCRYPTION_KEY"]) {
 }
 
 const { db, pool } = createDb(process.env.DATABASE_URL, { max: Number(process.env.DB_POOL_MAX ?? 5) });
+const handlers = { ...baseHandlers, ...applyHandlers };
 const runner = new Runner({ db, handlers, kind: process.env.WORKER_KIND ?? "general", version: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) });
 
 const server = createServer(async (req, res) => {

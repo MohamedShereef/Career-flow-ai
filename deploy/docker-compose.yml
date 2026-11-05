@@ -61,6 +61,8 @@ services:
       LOCAL_STORAGE_DIR: /data/files
       ALLOW_LOCAL_STORAGE: "true"
       PORT: "8080"
+    # Chromium for filling application forms needs a little shared memory.
+    shm_size: "256m"
     depends_on:
       db: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }

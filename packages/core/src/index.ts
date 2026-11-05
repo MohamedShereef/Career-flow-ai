@@ -22,3 +22,4 @@ export * as employers from "./services/employers";
 export * as matching from "./services/matching";
 export { SOURCE_HELP } from "./discovery/adapters";
 export * as applications from "./services/applications";
+export * as autoapply from "./services/autoapply";

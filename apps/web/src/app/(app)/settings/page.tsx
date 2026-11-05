@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { SOURCE_HELP, auth, dashboard, discovery, settings } from "@careerflow/core";
+import { SOURCE_HELP, auth, autoapply, dashboard, discovery, settings } from "@careerflow/core";
 import { changePasswordAction, signOutOtherSessionsAction } from "@/actions/auth";
+import { autopilotAction } from "@/actions/applications";
 import { consentAction, saveAutomationAction } from "@/actions/profile";
 import { addSourceAction, toggleSourceAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -16,7 +17,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const user = await requireUser();
   const sp = await searchParams;
   const tab = TABS.some(([k]) => k === sp.tab) ? sp.tab! : "automation";
-  const s = await settings.getSettings(db(), user.id);
+  const [s, pilot] = await Promise.all([settings.getSettings(db(), user.id), autoapply.autopilotStatus(db(), user.id)]);
 
   return (
     <>
@@ -31,7 +32,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
       {tab === "automation" && (
         <div className="grid gap-6 lg:grid-cols-2">
-          <Card title="Pilot limits" description="Supervised mode. The first applications always need your approval; continuous submission stays off until the pilot proves reliable.">
+          <Card title="Daily limits" description="Hard ceilings the agent never exceeds, even on autopilot. They reset at midnight in your time zone.">
             <ActionForm action={saveAutomationAction} className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Final submissions per day" name="maxSubmissionsPerDay" type="number" min={0} max={settings.PILOT_LIMITS.maxSubmissionsPerDay} defaultValue={s.maxSubmissionsPerDay} hint={`Pilot maximum: ${settings.PILOT_LIMITS.maxSubmissionsPerDay}`} />
@@ -44,11 +45,39 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               <SubmitButton>Save limits</SubmitButton>
             </ActionForm>
           </Card>
-          <Card title="Autopilot">
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between"><span>Manual approval required for first</span><Badge>{s.manualApprovalUntilCount} applications</Badge></div>
-              <div className="flex justify-between"><span>Continuous submission</span><Badge tone={s.continuousSubmissionEnabled ? "good" : "neutral"}>{s.continuousSubmissionEnabled ? "On" : "Off"}</Badge></div>
-              <p className="text-muted">Autopilot unlocks after {s.manualApprovalUntilCount} approved applications have been submitted with captured evidence. Legal declarations and identity questions always come to you.</p>
+          <Card title="Autopilot" description="Works on its own between your visits: picks your best new matches, tailors the CV and fills the employer's form.">
+            <div className="space-y-4 text-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-medium">Prepare applications for me</div>
+                  <div className="text-muted">Every hour, up to {s.maxBatchSize} of your recommended jobs at a time. You approve each one before it's sent.</div>
+                </div>
+                <ActionForm action={autopilotAction}>
+                  <input type="hidden" name="field" value="prepare" />
+                  <input type="hidden" name="on" value={s.autopilotEnabled ? "0" : "1"} />
+                  <SubmitButton className={s.autopilotEnabled ? "btn-secondary" : "btn-primary"}>{s.autopilotEnabled ? "Turn off" : "Turn on"}</SubmitButton>
+                </ActionForm>
+              </div>
+              <div className="flex items-start justify-between gap-4 border-t border-line pt-4">
+                <div>
+                  <div className="font-medium">Submit without asking</div>
+                  <div className="text-muted">
+                    {pilot.unlocked
+                      ? "Only when every answer came from your profile, saved answers or approved CV. Anything written by AI, legal or identity questions still come to you."
+                      : `Unlocks after ${pilot.needed} applications you approved were sent (${pilot.approvedSubmitted} so far).`}
+                  </div>
+                </div>
+                {pilot.unlocked ? (
+                  <ActionForm action={autopilotAction}>
+                    <input type="hidden" name="field" value="autoSubmit" />
+                    <input type="hidden" name="on" value={s.continuousSubmissionEnabled ? "0" : "1"} />
+                    <SubmitButton className={s.continuousSubmissionEnabled ? "btn-secondary" : "btn-primary"}>{s.continuousSubmissionEnabled ? "Turn off" : "Turn on"}</SubmitButton>
+                  </ActionForm>
+                ) : (
+                  <Badge>{pilot.approvedSubmitted}/{pilot.needed}</Badge>
+                )}
+              </div>
+              {!s.automationConsentAt && <p className="text-attention">Needs “Fill and submit applications” allowed in the Consent tab.</p>}
             </div>
           </Card>
         </div>

@@ -20,6 +20,9 @@ http.createServer((req, res) => {
     } else if (name === "job_match") {
       const good = /JOB: Senior Procurement/i.test(user);
       out = { score: good ? 84 : 35, eligibility: "eligible", factors: [{ factor: "Relevant experience", score: good ? 90 : 30, explanation: good ? "Direct MEP procurement experience" : "Different focus" }], summary: good ? "Strong fit for MEP procurement." : "Weak fit.", rejectionReasons: good ? [] : ["Seniority mismatch"], roleFamily: "procurement" };
+    } else if (name === "form_answers") {
+      const qs = JSON.parse(user.split("QUESTIONS:\n")[1] || "[]");
+      out = { answers: qs.map((q) => ({ key: q.key, answer: /why/i.test(q.question) ? "I run MEP tenders on large projects and want to bring that to a giga-project." : null })) };
     } else {
       const ids = [...user.matchAll(/"experienceId":"([0-9a-f-]{36})"/g)].map((m) => m[1]);
       out = { headline: "Senior Procurement Engineer – MEP", summary: "Procurement engineer focused on MEP tenders. Managed a SAR 900M budget.", experiences: ids.map((id) => ({ experienceId: id, bullets: ["Ran MEP tenders end to end", "Negotiated subcontracts with key vendors"] })),
@@ -37,8 +40,39 @@ const POSTINGS = [
   { id: "1000002", title: "Procurement Officer (Riyadh, SA)" },
   { id: "1000003", title: "Quantity Surveyor (Riyadh, SA)" },
 ];
+// Mock employer application form (Greenhouse-style) for the auto-apply test.
+const received = [];
+const ATS_FORM = `<!doctype html><html><head><title>Apply – Acme Giga</title></head><body><h1>Senior Procurement Engineer</h1>
+<form method="post" action="/ats/submit" enctype="multipart/form-data">
+<label for="fn">First Name *</label><input id="fn" name="first_name" required>
+<label for="ln">Last Name *</label><input id="ln" name="last_name" required>
+<label for="em">Email *</label><input id="em" name="email" type="email" required>
+<label for="cv">Resume/CV *</label><input id="cv" name="resume" type="file" required>
+<fieldset><legend>Are you legally authorized to work in Saudi Arabia? *</legend>
+<label><input type="radio" name="auth" value="yes" required> Yes</label><label><input type="radio" name="auth" value="no"> No</label></fieldset>
+<label for="why">Why are you interested in this role? *</label><textarea id="why" name="why" required></textarea>
+<button type="submit">Submit Application</button></form></body></html>`;
+
 http.createServer((req, res) => {
   const base = "http://localhost:4011";
+  if (req.url === "/ats/apply") {
+    res.writeHead(200, { "content-type": "text/html" });
+    return res.end(ATS_FORM);
+  }
+  if (req.url === "/ats/submit" && req.method === "POST") {
+    let n = 0;
+    req.on("data", (c) => (n += c.length));
+    req.on("end", () => {
+      received.push({ bytes: n, at: new Date().toISOString() });
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><body><h1>Thank you for applying!</h1><p>Your application has been received.</p></body></html>");
+    });
+    return;
+  }
+  if (req.url === "/ats/received") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify(received));
+  }
   if (req.url.startsWith("/services/rss/job/")) {
     res.writeHead(200, { "content-type": "application/rss+xml" });
     res.end(`<?xml version="1.0"?><rss><channel>${POSTINGS.map((p) => `<item><title><![CDATA[${p.title}]]></title><link>${base}/job/${p.id}/</link><description><![CDATA[<p>${LONG}</p>]]></description><pubDate>Mon, 03 Nov 2026 08:00:00 GMT</pubDate></item>`).join("")}</channel></rss>`);

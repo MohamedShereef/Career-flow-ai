@@ -1,0 +1,1 @@
+ALTER TABLE "automation_settings" ADD COLUMN "autopilot_enabled" boolean DEFAULT false NOT NULL;

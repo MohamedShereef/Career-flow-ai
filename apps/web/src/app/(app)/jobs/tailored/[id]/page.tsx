@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AppError, applications, profile, tailor } from "@careerflow/core";
-import { markSubmittedAction, saveApplyLinkAction } from "@/actions/applications";
+import { AppError, applications, autoapply, profile, settings, tailor } from "@careerflow/core";
+import { autoApplyAction, markSubmittedAction, saveApplyLinkAction } from "@/actions/applications";
 import { approveTailoringAction } from "@/actions/cv";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { Badge, Card, Field, PageHeader, fmtDate } from "@/components/ui";
@@ -21,11 +21,15 @@ export default async function Tailored({ params, searchParams }: { params: Promi
     if (e instanceof AppError && e.status === 404) notFound();
     throw e;
   }
-  const [exps, facts, apply] = await Promise.all([
+  const [exps, facts, apply, s] = await Promise.all([
     profile.listExperiences(db(), user.id),
     profile.listCareerFacts(db(), user.id, true),
     applications.getForTailoring(db(), user.id, id),
+    settings.getSettings(db(), user.id),
   ]);
+  const autoInFlight = apply.application && ["processing", "awaiting_approval", "needs_user_action"].includes(apply.application.status) && apply.application.checkpoint !== "opened_apply_page";
+  const ats = apply.job ? autoapply.atsFromUrl(apply.job.applyUrl) : null;
+  const autoSupported = ats !== null && (autoapply.SUPPORTED_ATS as readonly string[]).includes(ats);
   const submitted = apply.ledger?.state === "submitted" || ["submitted_unverified", "confirmed_by_email", "interview", "rejected", "closed"].includes(apply.application?.status ?? "");
   let host = "";
   try { host = apply.job ? new URL(apply.job.applyUrl).hostname.replace(/^www\./, "") : ""; } catch {}
@@ -71,6 +75,27 @@ export default async function Tailored({ params, searchParams }: { params: Promi
               </ActionForm>
             ) : (
               <div className="space-y-4">
+                <div className="rounded-lg border border-brand-100 bg-brand-50 p-3">
+                  <div className="text-sm font-medium text-brand-700">Let CareerFlow apply for you</div>
+                  {autoInFlight ? (
+                    <p className="mt-1 text-sm">In progress. <Link href={`/applications/${apply.application!.id}`} className="font-medium text-brand-700 hover:underline">See it and approve →</Link></p>
+                  ) : !s.automationConsentAt ? (
+                    <p className="mt-1 text-sm text-slate-700">First allow “Fill and submit applications” in <Link href="/settings?tab=consent" className="text-brand-700 hover:underline">Settings → Consent</Link>.</p>
+                  ) : (
+                    <>
+                      <p className="mt-1 text-sm text-slate-700">
+                        It opens {host || "the employer's page"}, fills the form from your profile, uploads this CV, and shows you everything before pressing Submit.
+                        {!autoSupported && " This employer's system usually needs an account — if so it will tell you and you apply with the steps below."}
+                      </p>
+                      <ActionForm action={autoApplyAction} className="mt-2">
+                        <input type="hidden" name="jobId" value={apply.job.id} />
+                        <input type="hidden" name="tailoringId" value={t.id} />
+                        <SubmitButton pendingText="Starting…">Fill the application for me</SubmitButton>
+                      </ActionForm>
+                    </>
+                  )}
+                </div>
+                <div className="text-xs font-medium uppercase text-muted">Or apply yourself</div>
                 <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-700">
                   <li>Download the CV{t.coverLetterDocumentId ? " and cover letter" : ""} above.</li>
                   <li>Open the employer's page, upload them and answer their questions.</li>
