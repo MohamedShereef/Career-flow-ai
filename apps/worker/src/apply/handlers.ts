@@ -3,7 +3,7 @@ import { applications, automationSettings } from "@careerflow/db";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Handler, HandlerContext } from "../handlers";
 import { NonRetryableError } from "../handlers";
-import { closeSession, fill, goNext, materialize, navState, openForm, openSession, readStep, screenshot, submit, type Files, type Session } from "./engine";
+import { closeSession, describeProblems, fill, goNext, materialize, navState, openForm, openSession, readStep, screenshot, submit, type Files, type Session } from "./engine";
 
 /** Systems that need a candidate account: used only when the user saved a login for that portal. */
 const ACCOUNT_SYSTEMS = new Set(["workday", "successfactors", "oracle"]);
@@ -119,12 +119,17 @@ const prepare: Handler = async (ctx) => {
         await autoapply.recordWaitingForAnswers(ctx.db, app.id, plan.missing.length);
         return { waiting: plan.missing.length, step };
       }
-      const problems = await fill(form, page, plan.answers, files);
-      if (problems.length) {
-        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${problems.join(" | ")}` }, ctx.task.id);
-        return { blocked: "fill_failed", problems };
+      const required = new Set(fields.filter((f) => f.required).map((f) => f.key));
+      const { problems } = await fill(form, page, plan.answers, files, required);
+      const blocking = problems.filter((p) => p.required);
+      if (blocking.length) {
+        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}` }, ctx.task.id);
+        return { blocked: "fill_failed", problems: blocking };
       }
-      all.push(...plan.answers.map((a) => ({ ...a, key: stepKey(step, a.key) })));
+      // Optional fields the page wouldn't take are left empty (and not part of what you approve).
+      const dropped = new Set(problems.map((p) => p.key));
+      if (dropped.size) ctx.log("apply.optional_skipped", { applicationId, fields: problems.map((p) => p.label) });
+      all.push(...plan.answers.filter((a) => !dropped.has(a.key)).map((a) => ({ ...a, key: stepKey(step, a.key) })));
       optional += fields.filter((f) => !f.required && !plan.answers.some((a) => a.key === f.key)).length;
 
       const nav = await navState(form);
@@ -212,10 +217,11 @@ const submitHandler: Handler = async (ctx) => {
       const added = fields.filter((f) => f.required && !mine.some((a) => a.key === f.key));
       if (gone.length || added.length) return await reprepare(`step ${step + 1}: gone ${gone.map((a) => a.label).join(", ")} added ${added.map((f) => f.label).join(", ")}`);
 
-      const problems = await fill(form, page, mine, files);
-      if (problems.length) {
-        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: problems.join(" | ") }, ctx.task.id);
-        return { blocked: "fill_failed", problems };
+      const { problems } = await fill(form, page, mine, files, new Set(fields.filter((f) => f.required).map((f) => f.key)));
+      const blocking = problems.filter((p) => p.required);
+      if (blocking.length) {
+        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: describeProblems(blocking) }, ctx.task.id);
+        return { blocked: "fill_failed", problems: blocking };
       }
       const nav = await navState(form);
       if (!nav.next || nav.submit) {
@@ -269,9 +275,10 @@ const autopilotRun: Handler = async (ctx) => {
         .select({ n: sql<number>`count(*)::int` })
         .from(applications)
         .where(and(eq(applications.userId, u.userId), inArray(applications.status, ["processing", "awaiting_approval"])));
-      const slots = Math.max(0, u.batch - (inflight?.n ?? 0));
+      const left = await autoapply.autopilotStartsLeft(ctx.db, u.userId);
+      const slots = Math.min(left, Math.max(0, u.batch - (inflight?.n ?? 0)));
       if (!slots) {
-        out[u.userId] = { skipped: "batch full" };
+        out[u.userId] = { skipped: left ? "batch full" : "daily limit reached" };
         continue;
       }
       const picks = await autoapply.autopilotCandidates(ctx.db, u.userId, slots);
@@ -282,7 +289,7 @@ const autopilotRun: Handler = async (ctx) => {
           await autoapply.startAutoApply(ctx.db, u.userId, { jobId: p.j.id, tailoringId: t.id, origin: "autopilot" });
           started++;
         } catch (err) {
-          if (err instanceof AppError && ["ai_auth", "ai_rate_limited", "no_consent"].includes(err.code)) throw err;
+          if (err instanceof AppError && ["ai_auth", "ai_rate_limited", "no_consent", "ai_no_credit"].includes(err.code)) throw err;
           ctx.log("autopilot.skip", { jobId: p.j.id, error: String(err).slice(0, 200) });
         }
       }

@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@careerflow/db";
-import { AppError, ai, discovery, gmail, matching, queue } from "@careerflow/core";
+import { AppError, ai, autoapply, discovery, gmail, matching, queue } from "@careerflow/core";
 import { applicantProfiles } from "@careerflow/db";
 
 export interface HandlerContext {
@@ -106,7 +106,8 @@ export const handlers: Record<string, Handler> = {
     const r2 = await db.execute(sql`DELETE FROM password_reset_tokens WHERE expires_at < now() - interval '1 day'`);
     const r3 = await db.execute(sql`DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'`);
     const r4 = await db.execute(sql`DELETE FROM tasks WHERE status IN ('succeeded','cancelled') AND finished_at < now() - interval '30 days'`);
-    return { sessions: r1.rowCount, resetTokens: r2.rowCount, rateLimits: r3.rowCount, oldTasks: r4.rowCount };
+    const interrupted = await autoapply.reconcileInterruptedSubmits(db);
+    return { sessions: r1.rowCount, resetTokens: r2.rowCount, rateLimits: r3.rowCount, oldTasks: r4.rowCount, interrupted };
   },
 };
 

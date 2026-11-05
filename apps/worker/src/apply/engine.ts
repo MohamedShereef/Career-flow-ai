@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 import type { autoapply } from "@careerflow/core";
-import { BOT_CHECK, EXTRACT, FIND_APPLY, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OPTION_INDEX, OUTCOME, READBACK } from "./page-scripts";
+import { BOT_CHECK, CHOOSE, EXTRACT, FIND_APPLY, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -255,64 +255,140 @@ export async function materialize(s: Session, file: { bytes: Buffer; filename: s
 
 const eqText = (a: string, b: string) => a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
 
-/** Fill every planned answer, then read the form back. Returns the fields that didn't take. */
-export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files): Promise<string[]> {
-  const problems: string[] = [];
-  for (const a of answers) {
-    const loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
-    try {
-      const v = a.value;
-      if (v.kind === "file") {
-        const f = files[v.doc];
-        if (!f) throw new Error("file not available");
-        await loc.first().setInputFiles(f.path);
-      } else if (a.type === "listbox" && v.kind === "text") {
-        await loc.first().click();
-        await sleep(400);
-        const opt = page.getByRole("option", { name: v.value, exact: true }).first();
-        if (await opt.isVisible().catch(() => false)) await opt.click();
-        else await form.getByRole("option", { name: v.value, exact: true }).first().click({ timeout: 4000 });
-        await sleep(300);
-      } else if (a.type === "select" && v.kind === "text") {
-        await loc.first().selectOption({ label: v.value });
-      } else if ((a.type === "radio" || a.type === "checkbox_group") && (v.kind === "text" || v.kind === "multi")) {
-        for (const want of v.kind === "text" ? [v.value] : v.values) {
-          const i = (await form.evaluate(`${OPTION_INDEX}(${JSON.stringify([a.key, want])})`)) as number;
-          if (i < 0) throw new Error(`option "${want}" not found`);
-          await loc.nth(i).check({ force: true });
-        }
-      } else if (a.type === "checkbox" && v.kind === "bool") {
-        if (v.value) await loc.first().check({ force: true });
-        else await loc.first().uncheck({ force: true });
-      } else if (a.type === "combobox" && v.kind === "text") {
-        await loc.first().click();
-        await loc.first().fill(v.value);
-        await sleep(800);
-        await page.keyboard.press("Enter");
-      } else if (v.kind === "text") {
-        await loc.first().fill(v.value);
+const T = { timeout: 6000 };
+
+/** Re-tag fields after the page re-rendered part of the form (keys are deterministic, so they come back the same). */
+async function retag(form: Frame) {
+  await form.evaluate(EXTRACT).catch(() => undefined);
+}
+
+async function pickOption(form: Frame, page: Page, value: string) {
+  for (const scope of [page, form] as const) {
+    for (const exact of [true, false]) {
+      const opt = scope.getByRole("option", { name: value, exact }).first();
+      if (await opt.isVisible().catch(() => false)) {
+        await opt.click(T);
+        return true;
       }
-    } catch (err) {
-      problems.push(`${a.label}: ${(err as Error).message.split("\n")[0]!.slice(0, 120)}`);
     }
   }
-
-  const back = (await form.evaluate(`${READBACK}(${JSON.stringify(answers.map((a) => a.key))})`)) as Record<string, unknown>;
-  for (const a of answers) {
-    const got = back[a.key];
-    const v = a.value;
-    let ok = true;
-    if (got === null || got === undefined) ok = false;
-    else if (v.kind === "file") ok = Array.isArray(got) && got.length > 0;
-    else if (v.kind === "bool") ok = got === v.value;
-    else if (v.kind === "multi") ok = Array.isArray(got) && v.values.every((x) => (got as string[]).some((g) => eqText(g, x)));
-    else if (a.type === "combobox") ok = typeof got === "string" && got.length > 0;
-    else if (a.type === "date" || a.type === "tel" || a.type === "number") ok = typeof got === "string" && got.replace(/\D/g, "") === v.value.replace(/\D/g, "") || eqText(String(got), v.value);
-    else ok = typeof got === "string" && eqText(got, v.value);
-    if (!ok && !problems.some((p) => p.startsWith(`${a.label}:`))) problems.push(`${a.label}: the page didn't keep the value`);
-  }
-  return problems;
+  return false;
 }
+
+async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files) {
+  let loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
+  if (!(await loc.count())) {
+    await retag(form);
+    loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
+    if (!(await loc.count())) throw new Error("field disappeared from the page");
+  }
+  const v = a.value;
+  if (v.kind === "file") {
+    const f = files[v.doc];
+    if (!f) throw new Error("file not available");
+    await loc.first().setInputFiles(f.path, T);
+    return;
+  }
+  if (a.type === "select" && v.kind === "text") {
+    try {
+      await loc.first().selectOption({ label: v.value }, T);
+    } catch {
+      if (!(await form.evaluate(`${SET_SELECT}(${JSON.stringify([a.key, v.value])})`))) throw new Error(`option "${v.value}" not in the list`);
+    }
+    return;
+  }
+  if ((a.type === "radio" || a.type === "checkbox_group") && (v.kind === "text" || v.kind === "multi")) {
+    for (const want of v.kind === "text" ? [v.value] : v.values) {
+      const r = (await form.evaluate(`${CHOOSE}(${JSON.stringify([a.key, want, true])})`)) as { index: number; checked: boolean };
+      if (r.index < 0) throw new Error(`option "${want}" not found`);
+      if (!r.checked) await loc.nth(r.index).check({ force: true, ...T });
+    }
+    return;
+  }
+  if (a.type === "checkbox" && v.kind === "bool") {
+    const r = (await form.evaluate(`${CHOOSE}(${JSON.stringify([a.key, "", v.value])})`)) as { index: number; checked: boolean };
+    if (!r.checked) await (v.value ? loc.first().check({ force: true, ...T }) : loc.first().uncheck({ force: true, ...T }));
+    return;
+  }
+  if ((a.type === "listbox" || a.type === "combobox") && v.kind === "text") {
+    const el = loc.first();
+    await el.scrollIntoViewIfNeeded(T).catch(() => undefined);
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    await sleep(400);
+    if (await pickOption(form, page, v.value)) return;
+    // Searchable dropdowns: type to filter, then choose the match.
+    const editable = a.type === "combobox" && (await el.isEditable().catch(() => false));
+    if (editable) await el.fill(v.value, T);
+    else await page.keyboard.type(v.value, { delay: 30 });
+    await sleep(900);
+    if (await pickOption(form, page, v.value)) return;
+    if (editable) {
+      await page.keyboard.press("Enter");
+      return;
+    }
+    await page.keyboard.press("Escape");
+    throw new Error(`option "${v.value}" not found in the list`);
+  }
+  if (v.kind === "text") await loc.first().fill(v.value, T);
+}
+
+function kept(a: PlannedAnswer, got: unknown) {
+  const v = a.value;
+  if (got === null || got === undefined) return false;
+  if (v.kind === "file") return Array.isArray(got) && got.length > 0;
+  if (v.kind === "bool") return got === v.value;
+  if (v.kind === "multi") return Array.isArray(got) && v.values.every((x) => (got as string[]).some((g) => eqText(g, x)));
+  const g = String(got);
+  if (a.type === "combobox" || a.type === "listbox") return eqText(g, v.value) || g.toLowerCase().includes(v.value.toLowerCase().slice(0, 30));
+  if (a.type === "date" || a.type === "tel" || a.type === "number") return g.replace(/\D/g, "") === v.value.replace(/\D/g, "") || eqText(g, v.value);
+  if (a.type === "radio" || a.type === "select") return eqText(g, v.value) || g.toLowerCase().startsWith(v.value.toLowerCase());
+  return eqText(g, v.value);
+}
+
+export interface FillResult {
+  /** Fields that could not be set (with the reason). Required ones block the application. */
+  problems: Array<{ key: string; label: string; reason: string; required: boolean }>;
+}
+
+/**
+ * Fill every planned answer in page order, read the form back, and re-fill anything the
+ * page reset (cascading fields re-render the form). Two passes, then report what didn't stick.
+ */
+export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files, required?: Set<string>): Promise<FillResult> {
+  const errors = new Map<string, string>();
+  const pass = async (list: PlannedAnswer[]) => {
+    for (const a of list) {
+      try {
+        await fillOne(form, page, a, files);
+        errors.delete(a.key);
+      } catch (err) {
+        errors.set(a.key, (err as Error).message.split("\n")[0]!.slice(0, 120));
+      }
+    }
+  };
+  const readBack = async () => {
+    await retag(form);
+    return (await form.evaluate(`${READBACK}(${JSON.stringify(answers.map((a) => a.key))})`)) as Record<string, unknown>;
+  };
+
+  await pass(answers);
+  await sleep(1000);
+  let back = await readBack();
+  const again = answers.filter((a) => !kept(a, back[a.key]));
+  if (again.length) {
+    await pass(again);
+    await sleep(800);
+    back = await readBack();
+  }
+  const problems: FillResult["problems"] = [];
+  for (const a of answers) {
+    if (kept(a, back[a.key])) continue;
+    problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? "the page didn't keep the value", required: required ? required.has(a.key) : true });
+  }
+  return { problems };
+}
+
+export const describeProblems = (p: FillResult["problems"]) => p.map((x) => `${x.label}: ${x.reason}`).join(" | ");
 
 export async function screenshot(page: Page) {
   return page.screenshot({ fullPage: true, type: "png", timeout: 20_000 }).catch(() => page.screenshot({ type: "png" }));

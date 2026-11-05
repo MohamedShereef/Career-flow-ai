@@ -205,8 +205,11 @@ export async function runSource(db: Db, sourceId: string, trigger: "scheduled" |
         closedAt: null,
       };
       if (prev) {
-        const { dedupeKey: _keep, ...updateValues } = values; // keep the original dedupe identity
-        await db.update(jobs).set(updateValues).where(eq(jobs.id, prev.id));
+        const { dedupeKey: _keep, raw: newRaw, ...updateValues } = values as typeof values & { raw?: unknown }; // keep the original dedupe identity
+        await db
+          .update(jobs)
+          .set({ ...updateValues, ...(newRaw !== undefined ? { raw: sql`coalesce(${jobs.raw}, '{}'::jsonb) || ${JSON.stringify(newRaw)}::jsonb` } : {}) })
+          .where(eq(jobs.id, prev.id));
         result.updated++;
       } else {
         const ins = await db.insert(jobs).values(values).onConflictDoNothing().returning({ id: jobs.id });

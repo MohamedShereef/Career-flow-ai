@@ -175,23 +175,25 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
   const first = nameParts[0] ?? null;
   const last = nameParts.length > 1 ? nameParts.slice(1).join(" ") : null;
 
-  // label pattern → profile value
-  const PROFILE_RULES: Array<[RegExp, string | null | undefined]> = [
-    [/\b(first|given|fore) ?name\b/, first],
-    [/\b(last|family|sur) ?name\b|\bsurname\b/, last],
-    [/^(full )?name$|\bfull name\b|\byour name\b|\blegal name\b/, p.fullName],
-    [/\be ?mail\b/, p.contactEmail ?? ctx.userEmail],
-    [/\b(phone|mobile|telephone|cell|whatsapp)\b/, p.phone],
-    [/\blinked ?in\b/, p.linkedinUrl],
-    [/\b(current )?(city|location)\b|\bwhere are you (based|located)\b/, p.city],
-    [/\bcountry of residence\b|\bresidence country\b|\bcountry\b/, p.residencyCountry],
-    [/\bnationality\b|\bcitizenship\b/, p.nationality],
-    [/\b(current|most recent|present) (company|employer|organi[sz]ation)\b/, current?.employer],
-    [/\b(current|most recent|present) (job )?(title|position|role|designation)\b|^job title$|^headline$/, current?.title ?? p.headline],
-    [/\byears of (relevant |total |professional )?experience\b|\bhow many years\b/, p.yearsExperience != null ? String(p.yearsExperience) : null],
-    [/\bexpected (salary|compensation)\b|\bsalary expectation/, p.expectedSalary],
-    [/\bcurrent (salary|compensation)\b/, p.currentSalary],
-    [/\bnotice period\b/, p.noticePeriodDays != null ? `${p.noticePeriodDays} days` : null],
+  // label pattern → profile value. "personal" rules describe the candidate themself, so they must not
+  // fire on fields about something else ("Institution Country", "Employer City", "Reference Phone"…).
+  const ABOUT_SOMETHING_ELSE = /\b(institution|school|university|college|education|degree|major|employer|company|organi[sz]ation|previous|former|birth|born|issu(e|ed|ing)|passport|reference|referee|emergency|spouse|father|mother|guardian|manager|supervisor|recruiter|agency)\b/;
+  const PROFILE_RULES: Array<[RegExp, string | null | undefined, "personal" | "work"]> = [
+    [/\b(first|given|fore) ?names?\b|\bgiven name\(s\)/, first, "personal"],
+    [/\b(last|family|sur) ?name\b|\bsurname\b/, last, "personal"],
+    [/^(full )?name$|\bfull name\b|\byour name\b|\blegal name\b/, p.fullName, "personal"],
+    [/\be ?mail\b/, p.contactEmail ?? ctx.userEmail, "personal"],
+    [/\b(phone|mobile|telephone|cell|whatsapp)\b/, p.phone, "personal"],
+    [/\blinked ?in\b/, p.linkedinUrl, "personal"],
+    [/^(current )?(city|location)$|\b(current|home|residence) (city|location)\b|\bwhere are you (based|located)\b|^city of residence$/, p.city, "personal"],
+    [/^country$|\bcountry of residence\b|\bresidence country\b|\bcurrent country\b|\bcountry you live\b/, p.residencyCountry, "personal"],
+    [/^nationality$|\bnationality\b|\bcitizenship\b/, p.nationality, "personal"],
+    [/\b(current|most recent|present) (company|employer|organi[sz]ation)\b/, current?.employer, "work"],
+    [/\b(current|most recent|present) (job )?(title|position|role|designation)\b|^job title$|^headline$/, current?.title ?? p.headline, "work"],
+    [/\byears of (relevant |total |professional )?experience\b|\bhow many years\b/, p.yearsExperience != null ? String(p.yearsExperience) : null, "work"],
+    [/\bexpected (salary|compensation)\b|\bsalary expectation/, p.expectedSalary, "work"],
+    [/\bcurrent (salary|compensation)\b/, p.currentSalary, "work"],
+    [/\bnotice period\b/, p.noticePeriodDays != null ? `${p.noticePeriodDays} days` : null, "work"],
   ];
 
   const answers: PlannedAnswer[] = [];
@@ -227,7 +229,7 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
     }
 
     // 2) a standard field filled from the profile
-    const rule = PROFILE_RULES.find(([re]) => re.test(l));
+    const rule = PROFILE_RULES.find(([re, , kind]) => re.test(l) && !(kind === "personal" && ABOUT_SOMETHING_ELSE.test(l)));
     if (rule && rule[1]) {
       const v = asValue(f, rule[1]);
       if (v) {
@@ -254,7 +256,7 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
       `Years of experience: ${p.yearsExperience ?? "not stated"}`,
       `Location: ${p.city ?? ""} ${p.residencyCountry ?? ""}`,
       ...exps.map((e) => `Role: ${e.title} at ${e.employer} (${e.startDate?.slice(0, 7)} – ${e.isCurrent ? "present" : e.endDate?.slice(0, 7) ?? "?"})\n${e.description ?? ""}`),
-      `Qualifications: ${quals.map((q) => `${q.name}${q.state === "in_progress" ? " (in progress)" : ""}`).join("; ")}`,
+      `Qualifications: ${quals.map((q) => `${q.name}${q.issuer ? `, ${q.issuer}` : ""}${q.obtainedOn ? `, ${String(q.obtainedOn).slice(0, 7)}` : ""}${q.state === "in_progress" ? " (in progress)" : ""}`).join("; ")}`,
       `Skills: ${skills.map((s) => s.name).join(", ")}`,
       `Verified achievements: ${facts.map((f) => f.statement).join(" | ")}`,
     ].join("\n");
@@ -414,9 +416,15 @@ export async function startAutoApply(db: Db, userId: string, input: { jobId: str
     }
     if (atsFromUrl(applyUrl) === "linkedin") throw new AppError("linkedin", "CareerFlow doesn't apply through LinkedIn. Paste the employer's own careers-site link.");
   }
+  const [prev] = await db.select({ cp: applications.checkpointData, status: applications.status, checkpoint: applications.checkpoint }).from(applications).where(and(eq(applications.userId, userId), eq(applications.jobId, job.id)));
+  if (prev && (["submitted_unverified", "confirmed_by_email", "interview", "rejected", "closed"].includes(prev.status) || prev.checkpoint === "uncertain")) {
+    throw new AppError("already_applied", prev.checkpoint === "uncertain" ? "A previous attempt on this job had an unclear outcome. Check your email first." : "You already applied to this job.");
+  }
+  if (prev && ["processing", "awaiting_approval"].includes(prev.status) && input.origin === "autopilot") {
+    throw new AppError("in_progress", "This application is already in progress.");
+  }
   if (!applyUrl) {
     // Keep an employer link found or pasted on an earlier attempt.
-    const [prev] = await db.select({ cp: applications.checkpointData }).from(applications).where(and(eq(applications.userId, userId), eq(applications.jobId, job.id)));
     applyUrl = (prev?.cp as { applyUrl?: string } | null)?.applyUrl ?? null;
   }
   const ats = atsFromUrl(applyUrl ?? job.applyUrl);
@@ -809,4 +817,46 @@ export async function recordUnplannedSubmit(db: Db, applicationId: string, info:
     await event(tx, app.userId, applicationId, "error", "prepare", "Heads-up: this employer's form submitted on “Next” (no separate Submit step). It was sent with the answers shown here, before your final approval.");
     await audit(tx, { userId: app.userId, actor: "agent", action: "application.unplanned_submit", entityType: "application", entityId: applicationId, metadata: { url: info.url } });
   });
+}
+
+/**
+ * A submit step that was interrupted after the point of no return (worker restart,
+ * crash) leaves its task "blocked". Surface it to the user instead of "Working on it".
+ */
+export async function reconcileInterruptedSubmits(db: Db) {
+  const rows = await db.execute(sql`
+    SELECT t.id AS task_id, a.id AS app_id, a.user_id, j.dedupe_key
+    FROM tasks t
+    JOIN applications a ON a.id = (t.payload->>'applicationId')::uuid
+    JOIN jobs j ON j.id = a.job_id
+    WHERE t.kind = 'application.submit' AND t.status = 'blocked' AND a.status = 'processing'`);
+  let n = 0;
+  for (const r of rows.rows as Array<{ task_id: string; app_id: string; user_id: string; dedupe_key: string }>) {
+    const msg = "CareerFlow was interrupted right after pressing Submit, so it can't tell if the employer received it. Check your email for a receipt. It won't try this job again on its own.";
+    await db.update(submissionLedger).set({ state: "uncertain", updatedAt: new Date() }).where(and(eq(submissionLedger.userId, r.user_id), eq(submissionLedger.jobDedupeKey, r.dedupe_key), eq(submissionLedger.state, "attempting")));
+    await db.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "uncertain", updatedAt: new Date() }).where(eq(applications.id, r.app_id));
+    await event(db, r.user_id, r.app_id, "error", "submit", msg);
+    await db.execute(sql`UPDATE tasks SET status = 'dead', last_error = coalesce(last_error, '') || ' [reconciled: shown to user as unclear]' WHERE id = ${r.task_id}`);
+    n++;
+  }
+  return n;
+}
+
+/** How many applications autopilot may still start today (each one tailors a CV with AI). */
+export async function autopilotStartsLeft(db: Executor, userId: string) {
+  const s = await getSettings(db, userId);
+  const day = localDayStart(s.timezone);
+  const [r] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(applications)
+    .where(and(eq(applications.userId, userId), sql`${applications.createdAt} >= ${day.toISOString()}`, sql`${applications.checkpointData}->>'origin' = 'autopilot'`));
+  return Math.max(0, s.maxInspectionsPerDay - (r?.n ?? 0));
+}
+
+function localDayStart(tz: string) {
+  const now = new Date();
+  const local = new Date(now.toLocaleString("en-US", { timeZone: tz }));
+  const offset = now.getTime() - local.getTime();
+  local.setHours(0, 0, 0, 0);
+  return new Date(local.getTime() + offset);
 }

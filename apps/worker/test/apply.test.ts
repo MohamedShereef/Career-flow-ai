@@ -14,6 +14,7 @@ import { getStorage } from "../../../packages/core/src/storage";
 import { documents } from "@careerflow/db";
 import { applyHandlers } from "../src/apply/handlers";
 import { PORTAL_HTML, PORTAL_USER } from "./portal-mock";
+import { TRICKY_HTML } from "./tricky-mock";
 import type { HandlerContext } from "../src/handlers";
 import { closeDb, makeUser, testDb } from "../../../test/helpers";
 
@@ -24,6 +25,7 @@ let server: Server;
 let base = "";
 const received: Array<Record<string, string>> = [];
 const portalSubmissions: Array<Record<string, string>> = [];
+const trickySubmissions: Array<Record<string, string>> = [];
 
 const FORM = (extra = "") => `<!doctype html><html><head><title>Senior Procurement Engineer – Acme Giga</title></head><body>
 <h1>Senior Procurement Engineer</h1>
@@ -52,6 +54,23 @@ beforeAll(async () => {
     if (req.url === "/jobs/1/apply") {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(FORM());
+    }
+    if (req.url === "/tricky") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(TRICKY_HTML);
+    }
+    if (req.url === "/tricky/submit" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks).toString("latin1");
+        const fields: Record<string, string> = {};
+        for (const m of body.matchAll(/name="([^"]+)"(?:; filename="([^"]*)")?\r\n(?:Content-Type: [^\r]+\r\n)?\r\n([\s\S]*?)\r\n--/g)) fields[m[1]!] = m[2] ? `FILE:${m[2]}` : m[3]!;
+        trickySubmissions.push(fields);
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<html><body><h1>Thank you for applying!</h1><p>Your application has been received.</p></body></html>");
+      });
+      return;
     }
     if (req.url === "/portal" || req.url === "/portal/job/77") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -244,4 +263,29 @@ run("auto-apply in a real browser", () => {
     [a] = await db.select().from(applications).where(eq(applications.id, app.id));
     expect(a!.status).toBe("submitted_unverified");
   }, 180_000);
+
+  it("fills hidden-styled options, cascading fields and covered dropdowns; skips optional ones it can't set", async () => {
+    const db = testDb();
+    const { user, job } = await setup("/tricky");
+    await answers.saveAnswer(db, user.id, { questionText: "Marital Status", answer: "Married", scope: "global" });
+    ai.setAiTransportForTests(async (req) => {
+      const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1]!) as Array<{ key: string; question: string }>;
+      const ans = (q: string) => (/studying/i.test(q) ? "No" : /institution country/i.test(q) ? "Egypt" : /sport/i.test(q) ? "Football" : null);
+      return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: qs.map((q) => ({ key: q.key, answer: ans(q.question) })) }) };
+    });
+    await profile.updateProfile(db, user.id, { residencyCountry: "Saudi Arabia" });
+    const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { previewId?: string; blocked?: string; problems?: unknown };
+    expect(r.blocked, JSON.stringify(r.problems)).toBeUndefined();
+    const d = await autoapply.getDetail(db, user.id, app.id);
+    const got = Object.fromEntries(d.preview!.data.answers.map((x) => [x.label, x.value.kind === "text" ? x.value.value : x.value.kind]));
+    expect(got).toMatchObject({ Country: "Saudi Arabia", "Marital Status": "Married", "Are you currently studying here?": "No", "Institution Country": "Egypt" });
+    expect(got["Favourite sport"]).toBeUndefined(); // "Football" isn't an option → left empty, not blocking
+
+    const ap = await autoapply.approve(db, user.id, r.previewId!);
+    const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
+    expect(s.outcome).toBe("confirmed");
+    expect(trickySubmissions).toHaveLength(1);
+    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt" });
+  }, 120_000);
 });

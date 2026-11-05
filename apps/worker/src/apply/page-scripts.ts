@@ -255,3 +255,39 @@ export const LISTBOX_OPTIONS = String.raw`(() => {
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   return [...document.querySelectorAll('[role=listbox] [role=option], [role=option]')].filter(vis).map((o) => (o.innerText || o.textContent || "").replace(/\s+/g, " ").trim()).filter((t) => t && !/^(select one|select|none)$/i.test(t)).slice(0, 80);
 })()`;
+
+/** Choose a radio/checkbox option by its label like a person would (DOM click fires the page's own handlers). */
+export const CHOOSE = String.raw`(([key, wanted, on]) => {
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const els = [...document.querySelectorAll('[data-cf-key="' + CSS.escape(key) + '"]')];
+  const lab = (g) => norm((g.labels && g.labels[0] && (g.labels[0].innerText || g.labels[0].textContent)) || g.getAttribute("aria-label") || g.value);
+  const w = norm(wanted);
+  let i = els.findIndex((g) => lab(g) === w);
+  if (i < 0) i = els.findIndex((g) => lab(g).startsWith(w) || w.startsWith(lab(g)));
+  if (i < 0 && els.length === 1) i = 0;
+  if (i < 0) return { index: -1, checked: false };
+  const el = els[i];
+  const want = on !== false;
+  if (el.checked !== want) {
+    el.scrollIntoView({ block: "center" });
+    (el.labels && el.labels[0] && getComputedStyle(el).opacity === "0" ? el.labels[0] : el).click();
+    if (el.checked !== want) el.click();
+  }
+  return { index: i, checked: el.checked === want };
+})`;
+
+/** Set a native <select> by visible text and fire the events frameworks listen to. */
+export const SET_SELECT = String.raw`(([key, wanted]) => {
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const el = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
+  if (!el || el.tagName !== "SELECT") return false;
+  const w = norm(wanted);
+  const opts = [...el.options];
+  const o = opts.find((x) => norm(x.text) === w) || opts.find((x) => norm(x.text).startsWith(w)) || opts.find((x) => norm(x.value) === w);
+  if (!o) return false;
+  el.value = o.value;
+  o.selected = true;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+})`;

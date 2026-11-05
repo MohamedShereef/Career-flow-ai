@@ -127,3 +127,25 @@ describe("employer link finder", () => {
     expect(employerLink.looksLikeEmployerPosting("https://boards.greenhouse.io/johnsoncontrols/jobs/1", "Purchasing Team Leader", "Johnson Controls Arabia", "Purchasing Team Leader at Johnson Controls")).toBe(true);
   });
 });
+
+describe("interrupted submit", () => {
+  it("turns a submit cut off after the point of no return into an 'unclear' application, never a retry", async () => {
+    const { applications, jobs, submissionLedger, tasks } = await import("@careerflow/db");
+    const { eq } = await import("drizzle-orm");
+    const { user } = await makeUser();
+    const db = testDb();
+    const [job] = await db.insert(jobs).values({ externalId: crypto.randomUUID(), dedupeKey: crypto.randomUUID(), title: "Buyer", companyName: "Acme", employerKey: "acme", sourceUrl: "https://x", applyUrl: "https://x" }).returning();
+    const [app] = await db.insert(applications).values({ userId: user.id, jobId: job!.id, employerKey: "acme", status: "processing" }).returning();
+    await db.insert(submissionLedger).values({ userId: user.id, jobDedupeKey: job!.dedupeKey, employerKey: "acme", applicationId: app!.id, state: "attempting" });
+    await db.insert(tasks).values({ kind: "application.submit", payload: { applicationId: app!.id, approvalId: crypto.randomUUID() }, status: "blocked", checkpoint: { irreversible: true } });
+
+    expect(await autoapply.reconcileInterruptedSubmits(db)).toBe(1);
+    const [a] = await db.select().from(applications).where(eq(applications.id, app!.id));
+    expect(a).toMatchObject({ status: "needs_user_action", checkpoint: "uncertain" });
+    const [l] = await db.select().from(submissionLedger).where(eq(submissionLedger.applicationId, app!.id));
+    expect(l!.state).toBe("uncertain");
+    await settings.setConsent(db, user.id, "automation", true);
+    await expect(autoapply.startAutoApply(db, user.id, { jobId: job!.id })).rejects.toMatchObject({ code: "already_applied" });
+    expect(await autoapply.reconcileInterruptedSubmits(db)).toBe(0);
+  });
+});

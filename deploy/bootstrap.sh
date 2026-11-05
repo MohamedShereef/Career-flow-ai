@@ -66,10 +66,57 @@ if [ -n "${OPENAI_API_KEY:-}" ]; then
   sed -i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=$OPENAI_API_KEY|" .env
 fi
 
-# 5) Build and (re)start
-log "Building and starting containers"
-$DOCKER compose --env-file .env up -d --build --remove-orphans
+# 5) Build (old containers keep serving meanwhile), then restart
+log "Building"
+$DOCKER compose --env-file .env build
+# Never restart the worker while it is filling or submitting an employer's form.
+for i in $(seq 1 36); do
+  busy=$($DOCKER compose --env-file .env exec -T db psql -U careerflow -d careerflow -tAc "select count(*) from tasks where status='running' and kind in ('application.submit','application.prepare')" 2>/dev/null | tr -d '[:space:]')
+  [ -z "$busy" ] || [ "$busy" = "0" ] && break
+  log "Waiting for $busy application step(s) to finish before restarting ($i/36)"
+  sleep 10
+done
+log "Starting containers"
+$DOCKER compose --env-file .env up -d --remove-orphans
 $DOCKER image prune -f >/dev/null
+
+# Keep the server's updater current: deploy only commits whose GitHub checks all passed.
+if [ -w /usr/local/bin ]; then
+cat > /usr/local/bin/careerflow-update <<'SH'
+#!/bin/bash
+# Pull the latest main and redeploy only when it changed AND its CI passed.
+set -euo pipefail
+exec 9>/var/lock/careerflow-update.lock
+flock -n 9 || exit 0   # another update is already running
+set -a; . /etc/careerflow.env; set +a
+cd /opt/careerflow
+git fetch --depth 1 origin main
+target=$(git rev-parse origin/main)
+if [ "$(git rev-parse HEAD)" = "$target" ] && [ -f deploy/.env ] && [ "${1:-}" != "--force" ]; then exit 0; fi
+if [ "${1:-}" != "--force" ]; then
+  repo=$(git remote get-url origin | sed -E 's#(https://github.com/|git@github.com:)##; s#\.git$##')
+  verdict=$(curl -fsS -m 20 -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$repo/commits/$target/check-runs" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    runs = json.load(sys.stdin).get("check_runs", [])
+except Exception:
+    print("unknown"); sys.exit()
+if not runs: print("pending")
+elif any(r["status"] != "completed" for r in runs): print("pending")
+elif all(r["conclusion"] in ("success", "skipped", "neutral") for r in runs): print("success")
+else: print("failure")
+' || echo unknown)
+  case "$verdict" in
+    success) ;;
+    failure) echo "careerflow-update: $target failed CI — not deploying"; exit 0 ;;
+    *) echo "careerflow-update: CI for $target is $verdict — will check again"; exit 0 ;;
+  esac
+fi
+git reset --hard "$target"
+USER=root bash deploy/bootstrap.sh
+SH
+chmod +x /usr/local/bin/careerflow-update
+fi
 
 # 6) Restart Caddy so a certificate that failed earlier (e.g. ports opened late) is retried now.
 mkdir -p diag
