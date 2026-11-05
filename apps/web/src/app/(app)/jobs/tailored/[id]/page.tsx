@@ -1,16 +1,19 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AppError, profile, tailor } from "@careerflow/core";
+import { AppError, applications, profile, tailor } from "@careerflow/core";
+import { markSubmittedAction, saveApplyLinkAction } from "@/actions/applications";
 import { approveTailoringAction } from "@/actions/cv";
-import { Badge, Card, PageHeader, fmtDate } from "@/components/ui";
+import { ActionForm, SubmitButton } from "@/components/forms";
+import { Badge, Card, Field, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 
 export const metadata = { title: "Tailored CV" };
 
-export default async function Tailored({ params }: { params: Promise<{ id: string }> }) {
+export default async function Tailored({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string }> }) {
   const user = await requireUser();
   const { id } = await params;
+  const { error } = await searchParams;
   let t;
   try {
     t = await tailor.getTailoring(db(), user.id, id);
@@ -18,7 +21,14 @@ export default async function Tailored({ params }: { params: Promise<{ id: strin
     if (e instanceof AppError && e.status === 404) notFound();
     throw e;
   }
-  const [exps, facts] = await Promise.all([profile.listExperiences(db(), user.id), profile.listCareerFacts(db(), user.id, true)]);
+  const [exps, facts, apply] = await Promise.all([
+    profile.listExperiences(db(), user.id),
+    profile.listCareerFacts(db(), user.id, true),
+    applications.getForTailoring(db(), user.id, id),
+  ]);
+  const submitted = apply.ledger?.state === "submitted" || ["submitted_unverified", "confirmed_by_email", "interview", "rejected", "closed"].includes(apply.application?.status ?? "");
+  let host = "";
+  try { host = apply.job ? new URL(apply.job.applyUrl).hostname.replace(/^www\./, "") : ""; } catch {}
   const expById = new Map(exps.map((e) => [e.id, e]));
   const factById = new Map(facts.map((f) => [f.id, f]));
   const c = t.content;
@@ -46,6 +56,41 @@ export default async function Tailored({ params }: { params: Promise<{ id: strin
         )}
         <Link href="/jobs" className="text-sm text-brand-600 hover:underline">Tailor another</Link>
       </div>
+
+      {error && <p className="mb-4 rounded-lg bg-bad-50 p-3 text-sm text-bad">{error}</p>}
+      {t.approvedAt && (
+        <div className="mb-6">
+          <Card title="Apply" description={submitted ? undefined : "Apply on the employer's official page with the CV and cover letter above. When you've pressed their final Submit, come back and confirm so it's tracked and never sent twice."}>
+            {submitted ? (
+              <p className="text-sm"><Badge tone="good">Applied{apply.application?.submittedAt ? ` ${fmtDate(apply.application.submittedAt)}` : ""}</Badge> <Link href="/applications" className="ml-2 text-brand-600 hover:underline">Track it in Applications →</Link></p>
+            ) : !apply.job ? (
+              <ActionForm action={saveApplyLinkAction} className="flex flex-wrap items-end gap-3">
+                <input type="hidden" name="tailoringId" value={t.id} />
+                <div className="min-w-72 flex-1"><Field label="Link to the job's application page" name="applyUrl" type="url" placeholder="https://…" required /></div>
+                <SubmitButton pendingText="Saving…">Save link</SubmitButton>
+              </ActionForm>
+            ) : (
+              <div className="space-y-4">
+                <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-700">
+                  <li>Download the CV{t.coverLetterDocumentId ? " and cover letter" : ""} above.</li>
+                  <li>Open the employer's page, upload them and answer their questions.</li>
+                  <li>After you press their final Submit, confirm here.</li>
+                </ol>
+                <div className="flex flex-wrap items-center gap-3">
+                  <a className="btn-primary" href={`/api/apply/${t.id}`} target="_blank" rel="noopener">Apply on {host || "the employer's site"} ↗</a>
+                  {apply.application && (
+                    <ActionForm action={markSubmittedAction}>
+                      <input type="hidden" name="applicationId" value={apply.application.id} />
+                      <SubmitButton className="btn-secondary" pendingText="Saving…">I've submitted it</SubmitButton>
+                    </ActionForm>
+                  )}
+                </div>
+                {!apply.application && <p className="text-xs text-muted">“I've submitted it” appears after you open the employer's page — refresh this page when you come back.</p>}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
