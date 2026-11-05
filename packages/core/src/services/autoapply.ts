@@ -365,11 +365,28 @@ export const SUPPORTED_ATS = ["greenhouse", "lever", "ashby", "workable", "smart
 
 /** Sites that repost jobs. Their pages rarely hold the employer's form; we follow their Apply link instead. */
 const JOB_BOARD_HOSTS =
-  /(^|\.)(indeed\.[a-z.]+|glassdoor\.[a-z.]+|bayt\.com|naukrigulf\.com|gulftalent\.com|recruit\.net|jooble\.org|talent\.com|jobrapido\.com|whatjobs\.com|adzuna\.[a-z.]+|careerjet\.[a-z.]+|jobsora\.com|simplyhired\.[a-z.]+|ziprecruiter\.[a-z.]+|monster\.[a-z.]+|drjobpro\.com|drjob\.[a-z.]+|akhtaboot\.com|wuzzuf\.net|tanqeeb\.com|laimoon\.com|expatriates\.com|dubizzle\.com|jobleads\.com|lensa\.com|learn4good\.com|jobtome\.com|jobted\.[a-z.]+|neuvoo\.[a-z.]+|jora\.com|mourjan\.com|founditgulf\.com|monstergulf\.com|naukri\.com|shine\.com|xpatjobs\.[a-z.]+|ksa-jobs\.com|saudijobs\.[a-z.]+|jobzmall\.com|ladders\.com|dice\.com|google\.com)$/;
+  /(^|\.)(indeed\.[a-z.]+|glassdoor\.[a-z.]+|bayt\.com|naukrigulf\.com|gulftalent\.com|recruit\.net|jooble\.org|talent\.com|jobrapido\.com|whatjobs\.com|adzuna\.[a-z.]+|careerjet\.[a-z.]+|jobsora\.com|simplyhired\.[a-z.]+|ziprecruiter\.[a-z.]+|monster\.[a-z.]+|drjobpro\.com|drjob\.[a-z.]+|akhtaboot\.com|wuzzuf\.net|tanqeeb\.com|laimoon\.com|expatriates\.com|dubizzle\.com|jobleads\.com|lensa\.com|learn4good\.com|jobtome\.com|jobted\.[a-z.]+|neuvoo\.[a-z.]+|jora\.com|mourjan\.com|founditgulf\.com|monstergulf\.com|naukri\.com|shine\.com|xpatjobs\.[a-z.]+|ksa-jobs\.com|saudijobs\.[a-z.]+|jobzmall\.com|ladders\.com|dice\.com|google\.com|bebee\.com|mihnati\.com|jobsora\.com|trabajo\.org|jobisjob\.[a-z.]+|joblist\.com|snagajob\.com|workcircle\.com|jobilize\.com|salary\.com|glints\.com|careerbuilder\.com|jobsinsaudi\.[a-z.]+|gulfjobs\.[a-z.]+|jobslin\.com|jobsearchsaudi\.[a-z.]+|recruitmentsaudi\.[a-z.]+|recruiter\.com|jobtoday\.com|adzuna\.[a-z.]+|jobberman\.com|hirect\.in|apna\.co|wellfound\.com|builtin\.com|jooble\.[a-z.]+|kitjob\.[a-z.]+|jobsdb\.com|jobstreet\.[a-z.]+|seek\.com\.au|reed\.co\.uk|totaljobs\.com|cv-library\.co\.uk|stepstone\.[a-z.]+|xing\.com|infojobs\.[a-z.]+|computrabajo\.[a-z.]+|olx\.[a-z.]+|opensooq\.com|haraj\.com\.sa)$/;
 
 export function isJobBoardUrl(url: string) {
   const k = atsFromUrl(url);
   return k === "job_board" || k === "linkedin";
+}
+
+/**
+ * A "career site" link whose address doesn't mention the employer is probably a job board we
+ * don't know yet (bebee, …): look for the employer's own posting before trusting it.
+ */
+export function probablyNotEmployerSite(url: string, companyName: string) {
+  if (isJobBoardUrl(url)) return true;
+  if (atsFromUrl(url) !== "career_site") return false;
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return true;
+  }
+  const words = companyName.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").split(" ").filter((w) => w.length >= 4 && !["company", "group", "arabia", "saudi", "international", "contracting", "investment", "holding", "limited", "trading"].includes(w));
+  return words.length > 0 && !words.some((w) => host.includes(w)) && !host.includes(words.join(""));
 }
 
 /** The link the agent should use: one the user pasted for this application wins over the discovered one. */

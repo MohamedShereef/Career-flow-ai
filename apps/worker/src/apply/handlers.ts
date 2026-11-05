@@ -41,6 +41,7 @@ function memoryFor(ctx: HandlerContext, userId: string, page: { url(): string },
   const host = () => hostOf(page.url());
   return {
     order: (sig) => fieldMemory.learnedOrder(ctx.db, host(), sig),
+    choose: (info) => fieldMemory.chooseOption(ctx.db, userId, { host: host(), ...info }),
     record: (sig, group, strategy, ok, steps) => fieldMemory.record(ctx.db, host(), sig, group, strategy, ok, steps),
     ...(withRescue
       ? { rescue: (info: Parameters<NonNullable<FillMemory["rescue"]>>[0]) => fieldMemory.rescuePlan(ctx.db, userId, { host: host(), ...info }) }
@@ -69,7 +70,7 @@ const prepare: Handler = async (ctx) => {
 
   let startUrl = autoapply.applyUrlFor(app, job);
   // Job boards often show robot checks and don't host the form: look for the employer's own posting first.
-  if (autoapply.isJobBoardUrl(startUrl)) {
+  if (autoapply.probablyNotEmployerSite(startUrl, job.companyName)) {
     const found = await employerLink.findEmployerLink(ctx.db, job).catch(() => null);
     if (found) {
       const h = (u: string) => hostOf(u).replace(/^www\./, "") || u;
@@ -107,7 +108,7 @@ const prepare: Handler = async (ctx) => {
       await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: `Ended on LinkedIn (${snapshot.url})` }, ctx.task.id);
       return { blocked: "linkedin" };
     }
-    if (snapshot.blockers[0]?.kind === "form_missing" && landed === "job_board") {
+    if (snapshot.blockers[0]?.kind === "form_missing" && (landed === "job_board" || autoapply.probablyNotEmployerSite(snapshot.url, job.companyName))) {
       await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: snapshot.blockers[0].detail }, ctx.task.id);
       return { blocked: "job_board" };
     }
@@ -134,7 +135,9 @@ const prepare: Handler = async (ctx) => {
         return { waiting: plan.missing.length, step };
       }
       const required = new Set(fields.filter((f) => f.required).map((f) => f.key));
-      const { problems } = await fill(form, page, plan.answers, files, required, memoryFor(ctx, app.userId, page, true));
+      const { problems, chosen } = await fill(form, page, plan.answers, files, required, memoryFor(ctx, app.userId, page, true));
+      // The preview shows exactly what the site received ("Egypt" for "Egyptian"); an AI-picked option needs a look.
+      plan.answers = plan.answers.map((a) => (chosen[a.key] ? { ...a, value: { kind: "text" as const, value: chosen[a.key]!.chosen }, needsReview: a.needsReview || chosen[a.key]!.ai } : a));
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
         await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}`, debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));

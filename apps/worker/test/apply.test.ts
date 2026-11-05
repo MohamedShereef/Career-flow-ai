@@ -298,6 +298,7 @@ run("auto-apply in a real browser", () => {
     await answers.saveAnswer(db, user.id, { questionText: "Religion", answer: "Islam", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Highest Education Level", answer: "Bachelor's Degree", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Seniority Level", answer: "Senior", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Nationality", answer: "Egyptian", scope: "global" });
     let rescues = 0;
     ai.setAiTransportForTests(async (req) => {
       if (req.schemaName === "field_rescue") {
@@ -319,12 +320,13 @@ run("auto-apply in a real browser", () => {
     const got = Object.fromEntries(d.preview!.data.answers.map((x) => [x.label, x.value.kind === "text" ? x.value.value : x.value.kind]));
     expect(got).toMatchObject({ Country: "Saudi Arabia", "Marital Status": "Married", "Are you currently studying here?": "No", "Institution Country": "Egypt" });
     expect(got["Favourite sport"]).toBeUndefined(); // "Football" isn't an option → left empty, not blocking
+    expect(got["Nationality"]).toBe("Egypt"); // the preview shows the site's own wording
 
     const ap = await autoapply.approve(db, user.id, r.previewId!);
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(trickySubmissions).toHaveLength(1);
-    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree", seniority: "Senior" });
+    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree", seniority: "Senior", nationality: "Egypt" });
     // Learned: the AI-found method was saved for this site and reused at submit without asking the AI again.
     expect(rescues).toBe(1);
     const learned = await db.select().from(fieldRecipes).where(like(fieldRecipes.strategy, "ai:%"));

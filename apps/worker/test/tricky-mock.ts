@@ -34,6 +34,11 @@ export const TRICKY_HTML = String.raw`<!doctype html><html><head><title>Apply â€
     <input type="hidden" name="seniority" id="lvl-val">
   </div>
   <ul role="listbox" id="lvl-pop" class="hidden"><li role="option">Mid</li><li role="option">Senior</li><li role="option">Lead</li></ul>
+  <div class="paginatedPicklistContainer">
+    <input aria-label="Nationality" autocomplete="off" type="text" placeholder="No Selection" value="No Selection" aria-owns="nat-list" role="combobox" aria-required="true" id="nat" size="20">
+    <input type="hidden" name="nationality" id="nat-val">
+    <ul role="listbox" id="nat-list"></ul>
+  </div>
   <label for="hobby">Favourite sport</label><select id="hobby" name="hobby"><option value="">Selectâ€¦</option><option>Chess</option></select>
   <button type="submit">Submit Application</button>
 </form>
@@ -49,6 +54,16 @@ const ic = document.getElementById("ic"), list = document.getElementById("ic-lis
 document.querySelector(".cb .icon").addEventListener("click", () => list.classList.remove("hidden"));
 ic.addEventListener("focus", () => list.classList.remove("hidden"));
 ic.addEventListener("input", () => { list.classList.remove("hidden"); [...list.children].forEach(o => o.style.display = o.textContent.toLowerCase().includes(ic.value.toLowerCase()) ? "" : "none"); });
+// Nationality picklist worded by country ("Egypt"), not demonym ("Egyptian").
+const COUNTRIES = ["Egypt", "Eritrea", "Estonia", "Saudi Arabia", "Jordan"];
+const nat = document.getElementById("nat"), natList = document.getElementById("nat-list"), natVal = document.getElementById("nat-val");
+let natChosen = "";
+nat.addEventListener("keyup", () => setTimeout(() => {
+  const q = nat.value.toLowerCase();
+  natList.innerHTML = COUNTRIES.filter((x) => x.toLowerCase().includes(q)).map((x) => '<li role="option">' + x + '</li>').join("");
+  natList.querySelectorAll("li").forEach((li) => li.addEventListener("mousedown", () => { natChosen = li.textContent; nat.value = li.textContent; natVal.value = li.textContent; natList.innerHTML = ""; }));
+}, 300));
+nat.addEventListener("blur", () => setTimeout(() => { if (nat.value !== natChosen) { nat.value = "No Selection"; natVal.value = ""; } }, 150));
 // SuccessFactors paginated picklist: options come from the "server" only on real key presses;
 // leaving without choosing from the list resets it to "No Selection".
 const EDU = ["Diploma", "Bachelor's Degree", "Master's Degree", "Doctorate"];

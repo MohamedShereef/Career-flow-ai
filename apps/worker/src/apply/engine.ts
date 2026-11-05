@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 import type { autoapply, fieldMemory } from "@careerflow/core";
 import { createHash } from "node:crypto";
+import { alternatives, bestOption } from "./match-option";
 type RescueStep = fieldMemory.RescueStep;
 import { BOT_CHECK, CHOOSE, ENTER_SAFE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, SUBMIT_GUARD, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
 
@@ -187,7 +188,9 @@ export async function openForm(s: Session, url: string, atsKind: string, opts: {
 
   let found = await extractBest(page);
   // Heavy portals (e.g. SuccessFactors sign-in) render their form a few seconds after load.
-  for (let i = 0; i < 3 && !found.raw.fields.length && !found.raw.password; i++) {
+  // Only wait when the page shows nothing to act on (no fields, no sign-in, no Apply button).
+  const looksEmpty = async () => !found.raw.fields.length && !found.raw.password && !((await page.evaluate(FIND_APPLY).catch(() => 0)) as number);
+  for (let i = 0; i < 3 && (await looksEmpty()); i++) {
     await sleep(2500);
     found = await extractBest(page);
   }
@@ -226,7 +229,7 @@ export async function openForm(s: Session, url: string, atsKind: string, opts: {
     await settle(page);
     await dismissCookies(page);
     found = await extractBest(page);
-    for (let i = 0; i < 3 && !found.raw.fields.length && !found.raw.password; i++) {
+    for (let i = 0; i < 3 && (await looksEmpty()); i++) {
       await sleep(2500);
       found = await extractBest(page);
     }
@@ -302,19 +305,35 @@ async function retag(form: Frame) {
   await form.evaluate(EXTRACT).catch(() => undefined);
 }
 
-async function pickOption(form: Frame, page: Page, value: string, popupId = "") {
-  // Prefer the popup this dropdown says it controls, so we never click another list's option.
-  const scopes = popupId ? [form.locator(`[id="${popupId}"]`), page.locator(`[id="${popupId}"]`), page, form] : [page, form];
-  for (const scope of scopes) {
-    for (const exact of [true, false]) {
-      const opt = scope.getByRole("option", { name: value, exact }).first();
-      if (await opt.isVisible().catch(() => false)) {
-        await opt.click(T);
-        return true;
-      }
+/**
+ * Click the option that means the wanted answer — chosen from what the list actually offers
+ * ("Egyptian" → "Egypt", "Islam" → "Muslim"); asks the AI to pick from the list only if unsure.
+ * Returns the option text that was clicked.
+ */
+async function pickOption(c: Ctx, value: string): Promise<string | null> {
+  const { form, page, popup } = c;
+  const scopes: Array<{ scope: Frame | Page; popup: string | null }> = popup
+    ? [{ scope: form, popup }, { scope: page, popup }, { scope: page, popup: null }, { scope: form, popup: null }]
+    : [{ scope: page, popup: null }, { scope: form, popup: null }];
+  for (const { scope, popup: pid } of scopes) {
+    const texts = (await scope.evaluate(`${LISTBOX_OPTIONS}(${JSON.stringify(pid)})`).catch(() => [])) as string[];
+    if (!texts.length) continue;
+    let choice = bestOption(value, texts);
+    if (!choice && c.memory?.choose) {
+      choice = await c.memory.choose({ label: c.a.label, wanted: value, options: texts }).catch(() => null);
+      if (choice && !texts.includes(choice)) choice = null;
+      if (choice) c.aiChosen = true;
+    }
+    if (!choice) continue;
+    const root = pid ? scope.locator(`[id="${pid}"]`) : scope;
+    const opt = root.getByRole("option", { name: choice, exact: true }).first();
+    if (await opt.isVisible().catch(() => false)) {
+      await opt.click(T);
+      c.chosen = choice;
+      return choice;
     }
   }
-  return false;
+  return null;
 }
 
 type Group = "file" | "select" | "choice" | "list" | "text";
@@ -328,6 +347,10 @@ interface Ctx {
   files: Files;
   loc: ReturnType<Frame["locator"]>;
   popup: string;
+  memory?: FillMemory;
+  /** The option actually clicked (may differ in wording from the answer, e.g. Egyptian → Egypt). */
+  chosen?: string;
+  aiChosen?: boolean;
 }
 const valueOf = (a: PlannedAnswer) => (a.value.kind === "text" ? a.value.value : "");
 
@@ -371,14 +394,15 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
       await loc.nth(r.index).check({ force: true, ...T });
     }
   },
-  click_option: async ({ form, page, loc, a, popup }) => {
+  click_option: async (c) => {
+    const { page, loc, a } = c;
     const el = loc.first();
     await el.scrollIntoViewIfNeeded(T).catch(() => undefined);
     await el.click(T).catch(() => el.click({ force: true, ...T }));
     await sleep(400);
-    if (!(await pickOption(form, page, valueOf(a), popup))) {
+    if (!(await pickOption(c, valueOf(a)))) {
       await page.keyboard.press("Escape").catch(() => undefined);
-      throw new Error(`option "${valueOf(a)}" not visible`);
+      throw new Error(`no option matching "${valueOf(a)}" in the list`);
     }
   },
   // Widgets that ignore clicks on options but accept type-ahead on the focused field.
@@ -392,21 +416,27 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
     if (!(await safeEnter(form, page))) throw new Error("Enter not safe here");
   },
   // Searchable lists that load options from the server on real key presses (e.g. SuccessFactors picklists).
-  type_pick: async ({ form, page, loc, a, popup }) => {
+  type_pick: async (c) => {
+    const { page, loc, a } = c;
     const el = loc.first();
-    await el.click(T).catch(() => el.click({ force: true, ...T }));
-    if (await el.isEditable().catch(() => false)) {
-      await el.press("ControlOrMeta+a").catch(() => undefined);
-      await el.press("Backspace").catch(() => undefined);
-      await el.pressSequentially(valueOf(a), { delay: 90, ...T });
-    } else {
-      await page.keyboard.type(valueOf(a), { delay: 60 });
+    const editable = await el.isEditable().catch(() => false);
+    // Type a short prefix so the list shows the site's own wording (typing "Egyptian" would hide "Egypt").
+    const prefixes = [...new Set(alternatives(valueOf(a)).map((x) => x.slice(0, Math.min(4, x.length))))].slice(0, 4);
+    for (const prefix of prefixes) {
+      await el.click(T).catch(() => el.click({ force: true, ...T }));
+      if (editable) {
+        await el.press("ControlOrMeta+a").catch(() => undefined);
+        await el.press("Backspace").catch(() => undefined);
+        await el.pressSequentially(prefix, { delay: 90, ...T });
+      } else {
+        await page.keyboard.type(prefix, { delay: 60 });
+      }
+      for (let i = 0; i < 6; i++) {
+        await sleep(500);
+        if (await pickOption(c, valueOf(a))) return;
+      }
     }
-    for (let i = 0; i < 8; i++) {
-      await sleep(500);
-      if (await pickOption(form, page, valueOf(a), popup)) return;
-    }
-    throw new Error(`"${valueOf(a)}" didn't appear in the list`);
+    throw new Error(`no option matching "${valueOf(a)}" appeared in the list`);
   },
   arrow_enter: async ({ form, loc, page, a }) => {
     const el = loc.first();
@@ -455,7 +485,7 @@ async function runSteps(c: Ctx, steps: RescueStep[]) {
         await el.click(T).catch(() => el.click({ force: true, ...T }));
         break;
       case "click_option":
-        if (!(await pickOption(c.form, c.page, valueOf(c.a), c.popup))) throw new Error("option not visible");
+        if (!(await pickOption(c, valueOf(c.a)))) throw new Error("option not visible");
         break;
       case "clear_field":
         await el.press("ControlOrMeta+a").catch(() => undefined);
@@ -490,6 +520,8 @@ export interface FillMemory {
   /** Learned methods for a widget on this site, best first ("ai" entries carry steps). */
   order(signature: string, group: string): Promise<Array<{ strategy: string; steps: RescueStep[] | null }>>;
   record(signature: string, group: string, strategy: string, ok: boolean, steps?: RescueStep[] | null): Promise<void>;
+  /** Ask the AI which of the site's options means the answer (it may only pick from the list). */
+  choose?(info: { label: string; wanted: string; options: string[] }): Promise<string | null>;
   /** Ask the AI for a plan when every known method failed. */
   rescue?(info: { label: string; wanted: string; fieldType: string; html: string; pageValue: string; tried: string[] }): Promise<RescueStep[] | null>;
 }
@@ -501,7 +533,7 @@ class FillError extends Error {
   }
 }
 
-async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, memory?: FillMemory, allowRescue = false) {
+async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, memory?: FillMemory, allowRescue = false): Promise<{ chosen: string; ai: boolean } | undefined> {
   let loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
   if (!(await loc.count())) {
     await retag(form);
@@ -509,7 +541,7 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
     if (!(await loc.count())) throw new Error("field disappeared from the page");
   }
   const popup = ((await form.evaluate(`${POPUP_ID}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || "";
-  const c: Ctx = { form, page, a, files, loc, popup };
+  const c: Ctx = { form, page, a, files, loc, popup, memory };
   const group = groupOf(a.type);
   const sig = ((await form.evaluate(`${WIDGET_SIG}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || `${group}:unknown`;
 
@@ -542,9 +574,9 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       await form.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()").catch(() => undefined);
       await sleep(400);
     }
-    if (await keeps(form, a)) {
+    if (await keeps(form, c.chosen ? { ...a, value: { kind: "text", value: c.chosen } } : a)) {
       await memory?.record(sig, group, p.strategy, true, p.steps).catch(() => undefined);
-      return;
+      return c.chosen && c.chosen !== valueOf(a) ? { chosen: c.chosen, ai: !!c.aiChosen } : undefined;
     }
     at.after = await pageValue();
     await memory?.record(sig, group, p.strategy, false, p.steps).catch(() => undefined);
@@ -563,10 +595,10 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       }
       await form.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()").catch(() => undefined);
       await sleep(400);
-      const ok = await keeps(form, a);
+      const ok = await keeps(form, c.chosen ? { ...a, value: { kind: "text", value: c.chosen } } : a);
       const name = `ai:${createHash("sha1").update(JSON.stringify(steps)).digest("hex").slice(0, 10)}`;
       await memory.record(sig, group, name, ok, steps).catch(() => undefined);
-      if (ok) return;
+      if (ok) return c.chosen && c.chosen !== valueOf(a) ? { chosen: c.chosen, ai: !!c.aiChosen } : undefined;
       lastError ||= "AI rescue didn't work";
     }
   }
@@ -592,6 +624,8 @@ function kept(a: PlannedAnswer, got: unknown) {
 }
 
 export interface FillResult {
+  /** Answers the site words differently: the option actually selected (and whether the AI picked it). */
+  chosen: Record<string, { chosen: string; ai: boolean }>;
   /** Fields that could not be set (with the reason). Required ones block the application. */
   problems: Array<{ key: string; label: string; reason: string; required: boolean; wanted?: string; debug?: unknown }>;
 }
@@ -604,10 +638,12 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
   await armGuard(form, page);
   const errors = new Map<string, string>();
   const attemptsByKey = new Map<string, Attempt[]>();
+  const chosen: FillResult["chosen"] = {};
   const pass = async (list: PlannedAnswer[], rescue = false) => {
     for (const a of list) {
       try {
-        await fillOne(form, page, a, files, memory, rescue);
+        const r = await fillOne(form, page, a, files, memory, rescue);
+        if (r) chosen[a.key] = r;
         errors.delete(a.key);
       } catch (err) {
         errors.set(a.key, (err as Error).message.split("\n")[0]!.slice(0, 120));
@@ -622,8 +658,9 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
 
   await pass(answers);
   await sleep(1000);
+  const asChosen = (a: PlannedAnswer): PlannedAnswer => (chosen[a.key] ? { ...a, value: { kind: "text", value: chosen[a.key]!.chosen } } : a);
   let back = await readBack();
-  const again = answers.filter((a) => !kept(a, back[a.key]));
+  const again = answers.filter((a) => !kept(asChosen(a), back[a.key]));
   if (again.length) {
     await pass(again, true); // second pass: the AI may try to rescue fields that still fail
     await sleep(800);
@@ -631,13 +668,13 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
   }
   const problems: FillResult["problems"] = [];
   for (const a of answers) {
-    if (kept(a, back[a.key])) continue;
+    if (kept(asChosen(a), back[a.key])) continue;
     const debug = await form.evaluate(`${FIELD_DEBUG}(${JSON.stringify(a.key)})`).catch(() => null);
     const wanted = a.value.kind === "text" ? a.value.value : a.value.kind === "multi" ? a.value.values.join("; ") : a.value.kind === "bool" ? String(a.value.value) : a.value.doc;
     const blocked = (await form.evaluate("window.__cfBlocked || 0").catch(() => 0)) as number;
     problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? `the page didn't keep the value (wanted "${wanted.slice(0, 60)}", page shows "${String(back[a.key] ?? "").slice(0, 60)}")`, required: required ? required.has(a.key) : true, wanted, debug: { ...(debug as object | null ?? {}), attempts: attemptsByKey.get(a.key) ?? [], blockedSubmits: blocked } });
   }
-  return { problems };
+  return { problems, chosen };
 }
 
 export const describeProblems = (p: FillResult["problems"]) => p.map((x) => `${x.label}: ${x.reason}`).join(" | ");

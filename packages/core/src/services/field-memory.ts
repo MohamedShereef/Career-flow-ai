@@ -135,3 +135,22 @@ export async function stats(db: Executor) {
     .from(fieldRecipes);
   return r ?? { methods: 0, aiFound: 0, sites: 0 };
 }
+
+/** Pick which of a site's options means the answer. The AI may only return one of the options, or none. */
+export async function chooseOption(db: Db, userId: string, info: { host: string; label: string; wanted: string; options: string[] }) {
+  const options = info.options.slice(0, 120);
+  const { data } = await structured<{ choice: string }>({
+    db,
+    userId,
+    stage: "option_choice",
+    agent: "application",
+    inputSummary: `${info.host} · ${info.label}`,
+    system: "A job-application form lists fixed options. Pick the ONE option that means the same as the candidate's answer (e.g. a nationality given as a demonym vs a country name, a religion name vs its adherent, different spelling or case). If none clearly means the same, answer \"NONE\". Never pick something merely similar.",
+    user: `Field: ${info.label}\nCandidate's answer: ${info.wanted}\nOptions: ${JSON.stringify(options)}`,
+    schemaName: "option_choice",
+    schema: js.obj({ choice: js.enumOf([...options, "NONE"]) }),
+    maxOutputTokens: 200,
+    outcome: (d) => d.choice,
+  });
+  return data.choice === "NONE" ? null : data.choice;
+}
