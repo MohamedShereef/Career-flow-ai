@@ -19,6 +19,10 @@ export const TRICKY_HTML = String.raw`<!doctype html><html><head><title>Apply â€
   <label id="ic-l">Institution Country *</label>
   <span class="cb"><input id="ic" name="inst_country" role="combobox" aria-labelledby="ic-l" aria-required="true" autocomplete="off"><span class="icon"></span></span>
   <ul role="listbox" id="ic-list" class="hidden"><li role="option">Egypt</li><li role="option">Saudi Arabia</li><li role="option">Jordan</li></ul>
+  <label id="rel-l">Religion *</label>
+  <div id="rel" role="combobox" tabindex="0" aria-haspopup="listbox" aria-controls="rel-pop" aria-labelledby="rel-l" aria-required="true" style="border:1px solid #999;padding:4px;width:200px">No Selection</div>
+  <select name="religion" id="rel-native" style="display:none"><option value="">No Selection</option><option value="ISL">Islam</option><option value="CHR">Christianity</option></select>
+  <ul role="listbox" id="rel-pop" class="hidden"><li role="option">Islam</li><li role="option">Christianity</li></ul>
   <label for="hobby">Favourite sport</label><select id="hobby" name="hobby"><option value="">Selectâ€¦</option><option>Chess</option></select>
   <button type="submit">Submit Application</button>
 </form>
@@ -34,5 +38,16 @@ const ic = document.getElementById("ic"), list = document.getElementById("ic-lis
 document.querySelector(".cb .icon").addEventListener("click", () => list.classList.remove("hidden"));
 ic.addEventListener("focus", () => list.classList.remove("hidden"));
 ic.addEventListener("input", () => { list.classList.remove("hidden"); [...list.children].forEach(o => o.style.display = o.textContent.toLowerCase().includes(ic.value.toLowerCase()) ? "" : "none"); });
+// Religion: like a SuccessFactors picklist that ignores option clicks but accepts type-ahead + Enter.
+const rel = document.getElementById("rel"), relPop = document.getElementById("rel-pop"), relNative = document.getElementById("rel-native");
+let typed = "";
+rel.addEventListener("click", () => relPop.classList.remove("hidden"));
+rel.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    const o = [...relPop.children].find((x) => x.textContent.toLowerCase().startsWith(typed.toLowerCase()));
+    if (o) { rel.textContent = o.textContent; relNative.value = [...relNative.options].find((x) => x.text === o.textContent).value; }
+    typed = ""; relPop.classList.add("hidden");
+  } else if (e.key.length === 1) typed += e.key;
+});
 list.querySelectorAll("[role=option]").forEach(o => o.addEventListener("click", () => { ic.value = o.textContent; list.classList.add("hidden"); }));
 </script></body></html>`;

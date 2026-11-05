@@ -314,3 +314,26 @@ export const FIELD_DEBUG = String.raw`((key) => {
     html: (wrap ? wrap.outerHTML : el.outerHTML).replace(/\s+/g, " ").slice(0, 1500),
   };
 })`;
+
+/** A styled dropdown often keeps a real <select> next to it; set that one by visible text. */
+export const SET_NEARBY_SELECT = String.raw`(([key, wanted]) => {
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const el = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
+  if (!el) return false;
+  let c = el.parentElement, sel = null;
+  for (let i = 0; i < 4 && c && !sel; i++, c = c.parentElement) sel = c.querySelector("select");
+  if (!sel) return false;
+  const w = norm(wanted);
+  const o = [...sel.options].find((x) => norm(x.text) === w) || [...sel.options].find((x) => norm(x.text).startsWith(w));
+  if (!o) return false;
+  sel.value = o.value; o.selected = true;
+  sel.dispatchEvent(new Event("input", { bubbles: true }));
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+})`;
+
+/** The id of the popup a dropdown controls, if it says so. */
+export const POPUP_ID = String.raw`((key) => {
+  const el = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
+  return el ? (el.getAttribute("aria-controls") || el.getAttribute("aria-owns") || "").split(/\s+/)[0] : "";
+})`;

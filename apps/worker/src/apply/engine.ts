@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 import type { autoapply } from "@careerflow/core";
-import { BOT_CHECK, CHOOSE, EXTRACT, FIELD_DEBUG, FIND_APPLY, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
+import { BOT_CHECK, CHOOSE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SET_NEARBY_SELECT, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -262,8 +262,10 @@ async function retag(form: Frame) {
   await form.evaluate(EXTRACT).catch(() => undefined);
 }
 
-async function pickOption(form: Frame, page: Page, value: string) {
-  for (const scope of [page, form] as const) {
+async function pickOption(form: Frame, page: Page, value: string, popupId = "") {
+  // Prefer the popup this dropdown says it controls, so we never click another list's option.
+  const scopes = popupId ? [form.locator(`[id="${popupId}"]`), page.locator(`[id="${popupId}"]`), page, form] : [page, form];
+  for (const scope of scopes) {
     for (const exact of [true, false]) {
       const opt = scope.getByRole("option", { name: value, exact }).first();
       if (await opt.isVisible().catch(() => false)) {
@@ -295,6 +297,14 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files) 
     } catch {
       if (!(await form.evaluate(`${SET_SELECT}(${JSON.stringify([a.key, v.value])})`))) throw new Error(`option "${v.value}" not in the list`);
     }
+    await sleep(300);
+    if (await keeps(form, a)) return;
+    // Some pages only accept a choice made like a person: focus, type the start, confirm.
+    await loc.first().focus().catch(() => undefined);
+    await page.keyboard.type(v.value.slice(0, 12), { delay: 60 });
+    await page.keyboard.press("Enter").catch(() => undefined);
+    await page.keyboard.press("Tab").catch(() => undefined);
+    await sleep(400);
     return;
   }
   if ((a.type === "radio" || a.type === "checkbox_group") && (v.kind === "text" || v.kind === "multi")) {
@@ -312,10 +322,22 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files) 
   }
   if ((a.type === "listbox" || a.type === "combobox") && v.kind === "text") {
     const el = loc.first();
+    const popup = ((await form.evaluate(`${POPUP_ID}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || "";
     await el.scrollIntoViewIfNeeded(T).catch(() => undefined);
     await el.click(T).catch(() => el.click({ force: true, ...T }));
     await sleep(400);
-    if (await pickOption(form, page, v.value)) return;
+    if (await pickOption(form, page, v.value, popup)) {
+      await sleep(300);
+      if (await keeps(form, a)) return;
+      // The click landed but the widget didn't take it: try the keyboard, then the hidden native list.
+      await el.focus().catch(() => undefined);
+      await page.keyboard.type(v.value.slice(0, 12), { delay: 60 });
+      await page.keyboard.press("Enter").catch(() => undefined);
+      await sleep(400);
+      if (await keeps(form, a)) return;
+      await form.evaluate(`${SET_NEARBY_SELECT}(${JSON.stringify([a.key, v.value])})`).catch(() => false);
+      return;
+    }
     // Searchable dropdowns: type to filter, then choose the match.
     const editable = a.type === "combobox" && (await el.isEditable().catch(() => false));
     if (editable) await el.fill(v.value, T);
@@ -330,6 +352,11 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files) 
     throw new Error(`option "${v.value}" not found in the list`);
   }
   if (v.kind === "text") await loc.first().fill(v.value, T);
+}
+
+async function keeps(form: Frame, a: PlannedAnswer) {
+  const back = (await form.evaluate(`${READBACK}(${JSON.stringify([a.key])})`).catch(() => ({}))) as Record<string, unknown>;
+  return kept(a, back[a.key]);
 }
 
 function kept(a: PlannedAnswer, got: unknown) {
