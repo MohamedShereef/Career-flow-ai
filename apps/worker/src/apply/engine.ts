@@ -38,6 +38,11 @@ export async function openSession(): Promise<Session> {
   return { browser, context, page, dir };
 }
 
+/** Turn on the submission guard in the page being filled (it stays off during navigation and sign-in). */
+async function armGuard(form: Frame, page: Page) {
+  for (const f of new Set([form, page.mainFrame()])) await f.evaluate("window.__cfGuardOn = true").catch(() => undefined);
+}
+
 /** Let the next deliberate click submit a form in this frame (sign in, Apply, Next, final Submit). */
 async function allowSubmit(scope: Frame | Page, ms = 6000) {
   await scope.evaluate(`window.__cfAllowUntil = Date.now() + ${ms}`).catch(() => undefined);
@@ -181,6 +186,11 @@ export async function openForm(s: Session, url: string, atsKind: string, opts: {
   await dismissCookies(page);
 
   let found = await extractBest(page);
+  // Heavy portals (e.g. SuccessFactors sign-in) render their form a few seconds after load.
+  for (let i = 0; i < 3 && !found.raw.fields.length && !found.raw.password; i++) {
+    await sleep(2500);
+    found = await extractBest(page);
+  }
   const visited: string[] = [page.url()];
   let login: OpenResult["login"];
   const isForm = () => looksLikeApplication(found.raw.fields, login?.outcome === "ok" && !found.raw.password);
@@ -198,6 +208,10 @@ export async function openForm(s: Session, url: string, atsKind: string, opts: {
       if (r.outcome !== "ok") break;
       await settle(page);
       found = await extractBest(page);
+      for (let i = 0; i < 3 && !found.raw.fields.length; i++) {
+        await sleep(2500);
+        found = await extractBest(page);
+      }
       visited.push(page.url());
       continue;
     }
@@ -212,6 +226,10 @@ export async function openForm(s: Session, url: string, atsKind: string, opts: {
     await settle(page);
     await dismissCookies(page);
     found = await extractBest(page);
+    for (let i = 0; i < 3 && !found.raw.fields.length && !found.raw.password; i++) {
+      await sleep(2500);
+      found = await extractBest(page);
+    }
     visited.push(page.url());
   }
 
@@ -583,6 +601,7 @@ export interface FillResult {
  * page reset (cascading fields re-render the form). Two passes, then report what didn't stick.
  */
 export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], files: Files, required?: Set<string>, memory?: FillMemory): Promise<FillResult> {
+  await armGuard(form, page);
   const errors = new Map<string, string>();
   const attemptsByKey = new Map<string, Attempt[]>();
   const pass = async (list: PlannedAnswer[], rescue = false) => {

@@ -400,7 +400,9 @@ export const SAFE_TARGET = String.raw`(([key, selector, popupId]) => {
 export const SUBMIT_GUARD = String.raw`(() => {
   if (window.__cfGuard) return;
   window.__cfGuard = true;
-  const allowed = () => (window.__cfAllowUntil || 0) > Date.now();
+  // Off while pages load and redirect (sign-in hand-offs submit hidden forms by themselves);
+  // switched on in the page CareerFlow is filling.
+  const allowed = () => window.__cfGuardOn !== true || (window.__cfAllowUntil || 0) > Date.now();
   const blocked = () => { window.__cfBlocked = (window.__cfBlocked || 0) + 1; };
   document.addEventListener("submit", (e) => { if (!allowed()) { e.preventDefault(); e.stopImmediatePropagation(); blocked(); } }, true);
   const ps = HTMLFormElement.prototype.submit;

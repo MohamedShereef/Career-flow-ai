@@ -52,9 +52,13 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(`<!doctype html><html><body><h1>Senior Procurement Engineer</h1><p>Great role.</p><a href="/jobs/1/apply">Apply now</a></body></html>`);
     }
-    if (req.url === "/jobs/1/apply") {
+    if (req.url === "/jobs/1/apply" || req.url === "/jobs/1/apply?sso=1") {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(FORM());
+    }
+    if (req.url === "/handoff") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><html><body onload="document.forms[0].submit()"><form method="get" action="/jobs/1/apply"><input type="hidden" name="sso" value="1"></form>Redirecting…</body></html>`);
     }
     if (req.url === "/implicit") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -347,4 +351,17 @@ run("auto-apply in a real browser", () => {
     expect(r.blocked).toBe("fill_failed"); // the field can't be set — so it stops and tells you
     expect(implicitPosts).toBe(0); // and nothing was ever sent to the employer
   }, 120_000);
+
+  it("still follows sign-in hand-offs that submit a hidden form by themselves on load", async () => {
+    const db = testDb();
+    const { user, job } = await setup("/handoff");
+    ai.setAiTransportForTests(async (req) => {
+      const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1] ?? "[]") as Array<{ key: string }>;
+      return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: qs.map((q) => ({ key: q.key, answer: null })) }) };
+    });
+    const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { blocked?: string; waiting?: number };
+    expect(r.blocked).toBeUndefined(); // reached the real form (it then asks the required questions)
+    expect(r.waiting).toBeGreaterThan(0);
+  }, 60_000);
 });
