@@ -25,3 +25,4 @@ export * as applications from "./services/applications";
 export * as autoapply from "./services/autoapply";
 export * as employerLink from "./services/employer-link";
 export * as logins from "./services/logins";
+export * as gmail from "./services/gmail";

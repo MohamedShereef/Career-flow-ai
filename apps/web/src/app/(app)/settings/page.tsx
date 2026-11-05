@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { SOURCE_HELP, auth, autoapply, dashboard, discovery, logins, settings } from "@careerflow/core";
+import { SOURCE_HELP, auth, autoapply, dashboard, discovery, gmail, logins, settings } from "@careerflow/core";
 import { changePasswordAction, signOutOtherSessionsAction } from "@/actions/auth";
-import { autopilotAction, deleteLoginAction, saveLoginAction } from "@/actions/applications";
+import { autopilotAction, connectGmailAction, deleteLoginAction, disconnectGmailAction, saveLoginAction, syncGmailAction } from "@/actions/applications";
 import { consentAction, saveAutomationAction } from "@/actions/profile";
 import { addSourceAction, toggleSourceAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -109,7 +109,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
       {tab === "sources" && <Sources />}
       {tab === "logins" && <SavedLogins userId={user.id} />}
-      {tab === "integrations" && <Integrations />}
+      {tab === "integrations" && <Integrations userId={user.id} />}
       {tab === "security" && <Security userId={user.id} />}
       {tab === "diagnostics" && <Diagnostics />}
     </>
@@ -154,8 +154,9 @@ async function SavedLogins({ userId }: { userId: string }) {
   );
 }
 
-async function Integrations() {
+async function Integrations({ userId }: { userId: string }) {
   const aiConfigured = !!process.env.OPENAI_API_KEY;
+  const g = await gmail.status(db(), userId);
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <Card title="AI engine (OpenAI)">
@@ -163,10 +164,36 @@ async function Integrations() {
           <span>Model: {process.env.OPENAI_MODEL ?? "gpt-5-mini"}</span>
           <Badge tone={aiConfigured ? "good" : "attention"}>{aiConfigured ? "Key configured" : "No API key"}</Badge>
         </div>
-        <p className="mt-2 text-sm text-muted">The key is set as a server environment variable and is never sent to the browser. It powers CV reading and tailoring now, and job matching next.</p>
+        <p className="mt-2 text-sm text-muted">The key is set as a server environment variable and is never sent to the browser. It powers CV reading, tailoring, job matching, form answers and email reading.</p>
       </Card>
-      <Card title="Gmail">
-        <div className="flex items-center justify-between text-sm"><span>Read-only access to confirm employer receipts</span><Badge>Coming soon</Badge></div>
+      <Card title="Gmail" description="Reads only job-related emails (from employers you applied to, application systems, or with interview/application subjects), to confirm receipts and catch interviews, tests and replies. Only a one-line summary is kept — never the email itself.">
+        {g ? (
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <span className="truncate">{g.email}</span>
+              <Badge tone={g.status === "connected" ? "good" : "bad"}>{g.status === "connected" ? "Connected" : g.status === "revoked" ? "App password rejected" : "Error"}</Badge>
+            </div>
+            <div className="text-muted">{g.lastSyncAt ? `Last checked ${fmtDate(g.lastSyncAt)}` : "First check in progress…"} · checks every 15 minutes</div>
+            {g.lastError && <p className="text-bad">{g.lastError}</p>}
+            <div className="flex flex-wrap gap-2">
+              <ActionForm action={syncGmailAction}><SubmitButton className="btn-secondary" pendingText="Starting…">Check now</SubmitButton></ActionForm>
+              <form action={disconnectGmailAction}><button className="btn-danger">Disconnect</button></form>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <ol className="list-decimal space-y-1 pl-5 text-slate-700">
+              <li>Turn on <a className="text-brand-600 hover:underline" href="https://myaccount.google.com/signinoptions/twosv" target="_blank" rel="noopener">2-Step Verification</a> on your Google account (if it isn't already).</li>
+              <li>Open <a className="text-brand-600 hover:underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App passwords</a>, type a name like “CareerFlow”, press Create.</li>
+              <li>Copy the 16-letter password Google shows and paste it below. You can revoke it there any time.</li>
+            </ol>
+            <ActionForm action={connectGmailAction} className="space-y-3">
+              <Field label="Gmail address" name="email" type="email" required />
+              <Field label="App password (16 letters)" name="appPassword" type="password" autoComplete="off" placeholder="abcd efgh ijkl mnop" required />
+              <SubmitButton pendingText="Checking with Google…">Connect Gmail</SubmitButton>
+            </ActionForm>
+          </div>
+        )}
       </Card>
     </div>
   );

@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { applications, autoapply, logins } from "@careerflow/core";
+import { applications, autoapply, gmail, logins, queue } from "@careerflow/core";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { runAction, str, type ActionState } from "@/lib/action";
@@ -114,4 +114,29 @@ export async function deleteLoginAction(fd: FormData) {
   const user = await requireUser();
   await logins.deleteLogin(db(), user.id, str(fd, "id"));
   revalidatePath("/settings");
+}
+
+export async function connectGmailAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await gmail.connect(db(), user.id, { email: str(fd, "email"), appPassword: String(fd.get("appPassword") ?? "") });
+    await queue.enqueue(db(), { kind: "gmail.sync_user", userId: user.id, payload: { userId: user.id }, dedupeKey: `gmail:${user.id}`, timeoutSeconds: 900 });
+    revalidatePath("/", "layout");
+    return "Gmail connected. Reading job-related emails from the last 3 weeks now — results appear in Applications in a few minutes.";
+  });
+}
+
+export async function syncGmailAction(_: ActionState, _fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await queue.enqueue(db(), { kind: "gmail.sync_user", userId: user.id, payload: { userId: user.id }, dedupeKey: `gmail:${user.id}`, timeoutSeconds: 900 });
+    return "Checking your inbox now.";
+  });
+}
+
+export async function disconnectGmailAction(fd: FormData) {
+  void fd;
+  const user = await requireUser();
+  await gmail.disconnect(db(), user.id);
+  revalidatePath("/", "layout");
 }

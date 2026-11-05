@@ -15,7 +15,8 @@ function capabilities(aiReady: boolean): Array<{ name: string; live: boolean; no
     { name: "Tailored CV & cover letters", live: aiReady, note: needsAi },
     { name: "Job discovery, employer vetting & matching", live: aiReady, note: aiReady ? "Ready" : "Needs AI key" },
     { name: "Auto-apply on employer sites (you approve each)", live: aiReady, note: aiReady ? "Ready" : "Needs AI key" },
-    { name: "Gmail tracking & interview scheduling", live: false, note: "Planned" },
+    { name: "Gmail tracking (receipts, interviews, replies)", live: aiReady, note: aiReady ? "Connect in Settings" : "Needs AI key" },
+    { name: "Interview scheduling replies", live: false, note: "Next release" },
   ];
 }
 

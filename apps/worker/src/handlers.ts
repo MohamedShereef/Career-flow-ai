@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@careerflow/db";
-import { ai, discovery, matching, queue } from "@careerflow/core";
+import { AppError, ai, discovery, gmail, matching, queue } from "@careerflow/core";
 import { applicantProfiles } from "@careerflow/db";
 
 export interface HandlerContext {
@@ -82,6 +82,23 @@ export const handlers: Record<string, Handler> = {
     return r;
   },
 
+  /** Read new job-related emails for everyone who connected Gmail. */
+  "gmail.sync_all": async ({ db }) => {
+    if (!ai.aiConfigured()) return { skipped: "AI not configured" };
+    const out: Record<string, unknown> = {};
+    for (const userId of await gmail.connectedUserIds(db)) {
+      try {
+        out[userId] = await gmail.sync(db, userId);
+      } catch (err) {
+        out[userId] = { error: err instanceof AppError ? err.code : String(err).slice(0, 200) };
+        if (err instanceof AppError && ["ai_auth", "ai_rate_limited"].includes(err.code)) throw err;
+      }
+    }
+    return out;
+  },
+
+  "gmail.sync_user": async ({ db, task }) => gmail.sync(db, String(task.payload.userId)),
+
   "system.ping": async () => ({ pong: new Date().toISOString() }),
 
   "maintenance.cleanup": async ({ db }) => {
@@ -98,4 +115,5 @@ export const systemSchedules = [
   { kind: "maintenance.cleanup", intervalMinutes: 60 },
   { kind: "discovery.run_all", intervalMinutes: Number(process.env.DISCOVERY_INTERVAL_MINUTES ?? 360) },
   { kind: "autopilot.run", intervalMinutes: Number(process.env.AUTOPILOT_INTERVAL_MINUTES ?? 60) },
+  { kind: "gmail.sync_all", intervalMinutes: Number(process.env.GMAIL_SYNC_MINUTES ?? 15) },
 ];

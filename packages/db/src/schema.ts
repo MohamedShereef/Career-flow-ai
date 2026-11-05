@@ -146,6 +146,8 @@ export const emailClass = pgEnum("email_class", [
   "assessment",
   "status_update",
   "rejection",
+  "offer",
+  "recruiter_outreach",
   "other",
 ]);
 export const emailMatch = pgEnum("email_match", ["matched", "ambiguous", "unmatched"]);
@@ -720,8 +722,11 @@ export const gmailIntegrations = pgTable("gmail_integrations", {
   id: id(),
   userId: uuid("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
   googleEmail: text("google_email").notNull(),
+  /** "app_password" (IMAP) today; OAuth can be added later. */
+  authMethod: text("auth_method").notNull().default("app_password"),
+  appPasswordEnc: text("app_password_enc"),
   accessTokenEnc: text("access_token_enc"),
-  refreshTokenEnc: text("refresh_token_enc").notNull(),
+  refreshTokenEnc: text("refresh_token_enc"),
   scope: text("scope").notNull(),
   tokenExpiresAt: ts("token_expires_at"),
   status: integrationStatus("status").notNull().default("connected"),
@@ -750,6 +755,13 @@ export const processedEmails = pgTable(
     candidateApplicationIds: jsonb("candidate_application_ids").$type<string[]>(),
     confidence: numeric("confidence", { precision: 4, scale: 3 }),
     aiDecisionId: uuid("ai_decision_id"),
+    /** One-sentence AI summary (the email body itself is never stored). */
+    summary: text("summary"),
+    employerName: text("employer_name"),
+    jobTitle: text("job_title"),
+    /** Interview/assessment times stated in the email, ISO strings. */
+    proposedTimes: jsonb("proposed_times").$type<string[]>(),
+    actionNeeded: boolean("action_needed").notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [
