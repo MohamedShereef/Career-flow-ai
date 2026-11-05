@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { applications, autoapply } from "@careerflow/core";
+import { applications, autoapply, logins } from "@careerflow/core";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { runAction, str, type ActionState } from "@/lib/action";
@@ -93,4 +93,25 @@ export async function useApplyLinkAction(_: ActionState, fd: FormData): Promise<
     revalidatePath("/", "layout");
     return "Got it — opening the employer's page now. This page updates in a minute.";
   });
+}
+
+export async function saveLoginAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await logins.saveLogin(db(), user.id, { url: str(fd, "url"), username: str(fd, "username"), password: String(fd.get("password") ?? ""), label: str(fd, "label") || null });
+    const applicationId = str(fd, "applicationId");
+    revalidatePath("/", "layout");
+    if (applicationId) {
+      const d = await autoapply.getDetail(db(), user.id, applicationId);
+      await autoapply.startAutoApply(db(), user.id, { jobId: d.job.id });
+      return "Login saved. CareerFlow is signing in and continuing the application.";
+    }
+    return "Login saved. It's used only on that portal.";
+  });
+}
+
+export async function deleteLoginAction(fd: FormData) {
+  const user = await requireUser();
+  await logins.deleteLogin(db(), user.id, str(fd, "id"));
+  revalidatePath("/settings");
 }

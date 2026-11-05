@@ -101,6 +101,15 @@ export const EXTRACT = String.raw`(() => {
     fields.push(f);
   }
 
+  // Custom dropdowns (Workday and others): a button that opens a listbox.
+  for (const el of root.querySelectorAll('button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]:not(input)')) {
+    if (!vis(el) || el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+    const raw = labelFor(el);
+    const key = mkKey("listbox", el.getAttribute("name") || el.id || el.getAttribute("data-automation-id") || raw);
+    el.setAttribute("data-cf-key", key);
+    fields.push({ key, label: strip(raw), type: "listbox", required: el.getAttribute("aria-required") === "true" || /\*/.test(raw), options: [] });
+  }
+
   const captcha = !!document.querySelector('iframe[src*="recaptcha/api2/anchor"], iframe[src*="recaptcha/enterprise/anchor"], iframe[src*="hcaptcha.com"][src*="checkbox"], iframe[src*="challenges.cloudflare.com"], .g-recaptcha:not([data-size="invisible"]) iframe');
   const password = [...document.querySelectorAll("input[type=password]")].some(vis);
   return { fields, captcha, password, title: document.title };
@@ -122,8 +131,9 @@ export const FIND_APPLY = String.raw`(() => {
     seen.add(href + t);
     return true;
   });
-  // Prefer the exact "Apply" / "Apply now" over longer variants.
-  els.sort((a, b) => label(a).length - label(b).length);
+  // "Apply Manually" (Workday) first, then the shortest "Apply" / "Apply now".
+  const rank = (e) => (/apply manually/i.test(label(e)) ? -100 : 0) + label(e).length;
+  els.sort((a, b) => rank(a) - rank(b));
   els.forEach((e, i) => e.setAttribute("data-cf-apply", String(i)));
   return els.length;
 })()`;
@@ -143,6 +153,7 @@ export const READBACK = String.raw`((keys) => {
     else if (t === "checkbox" && els.length === 1) out[key] = el.checked;
     else if (t === "checkbox") out[key] = els.filter((g) => g.checked).map(lab);
     else if (el.tagName === "SELECT") out[key] = el.selectedOptions[0] ? clean(el.selectedOptions[0].text) : "";
+    else if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") out[key] = clean(el.innerText || el.textContent);
     else out[key] = el.value;
   }
   return out;
@@ -192,4 +203,55 @@ export const BOT_CHECK = String.raw`(() => {
   const t = (document.title || "") + " " + ((document.body && document.body.innerText) || "").slice(0, 3000);
   return /just a moment|attention required|verify (that )?you are (a )?human|are you a robot|checking (if the site connection is secure|your browser)|press (&|and) hold|pardon our interruption|access (to this page has been )?denied|request unsuccessful|unusual traffic|security check|enable javascript and cookies to continue/i.test(t)
     || !!document.querySelector("#challenge-form, #cf-challenge-running, #px-captcha, [id^=sec-if-cpt], iframe[src*='captcha-delivery.com']");
+})()`;
+
+/** Sign-in screen: tag the username, password, submit and "switch to sign in" elements. */
+export const LOGIN_INFO = String.raw`(() => {
+  const vis = (e) => { if (!e) return false; const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none"; };
+  const txt = (e) => (e.innerText || e.value || e.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  document.querySelectorAll("[data-cf-login]").forEach((e) => e.removeAttribute("data-cf-login"));
+  const pw = [...document.querySelectorAll("input[type=password]")].filter(vis);
+  const body = ((document.body && document.body.innerText) || "").slice(0, 6000);
+  const verification = /verification code|one[- ]time (pass)?code|enter the code|security code|two[- ](step|factor)|authenticator app|verify your (email|identity|account)|we('ve| have) sent (you )?(a|an) (code|email)/i.test(body);
+  const errors = [...document.querySelectorAll('[role=alert], .error, [class*="error"], [data-automation-id*="error"]')].filter(vis).map(txt).filter((t) => t.length > 3 && t.length < 200).slice(0, 4);
+  if (!pw.length) return { passwords: 0, createMode: false, canSwitch: false, hasUser: false, hasSubmit: false, verification, errors };
+  const scope = pw[0].closest("form") || pw[0].closest("[role=dialog]") || document.body;
+  const createRe = /create (an |your )?account|register|sign ?up|join/i;
+  const submits = [...scope.querySelectorAll('button, [role=button], input[type=submit]')].filter(vis);
+  const submit = submits.find((e) => /^(sign ?in|log ?in|login|continue|next|submit)$/i.test(txt(e))) || submits.find((e) => (e.getAttribute("type") || "") === "submit" && !createRe.test(txt(e)));
+  const createMode = pw.length >= 2 || (!submit && submits.some((e) => createRe.test(txt(e))));
+  const sw = [...document.querySelectorAll('a, button, [role=button]')].filter(vis).find((e) => e !== submit && /^(sign ?in|log ?in|already have an account\??( sign ?in)?|i already have an account|existing (user|candidate).*)$/i.test(txt(e)));
+  const inputs = [...scope.querySelectorAll("input")].filter((e) => vis(e) && ["email", "text", ""].includes((e.getAttribute("type") || "").toLowerCase()));
+  const user = inputs.find((e) => /user|email|login|mail|account/i.test([e.name, e.id, e.getAttribute("autocomplete"), e.getAttribute("aria-label"), e.placeholder, e.getAttribute("data-automation-id")].join(" "))) || inputs[0];
+  if (user) user.setAttribute("data-cf-login", "user");
+  pw[0].setAttribute("data-cf-login", "pass");
+  if (submit) submit.setAttribute("data-cf-login", "submit");
+  if (sw) sw.setAttribute("data-cf-login", "switch");
+  return { passwords: pw.length, createMode, canSwitch: !!sw, hasUser: !!user, hasSubmit: !!submit, verification, errors };
+})()`;
+
+/** Wizard navigation on the current step: is there a Next, a final Submit, or neither? */
+export const FIND_NAV = String.raw`(() => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); const cs = getComputedStyle(e); return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none"; };
+  const txt = (e) => (e.innerText || e.value || e.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  document.querySelectorAll("[data-cf-next]").forEach((e) => e.removeAttribute("data-cf-next"));
+  const btns = [...document.querySelectorAll('button, [role=button], input[type=submit], input[type=button]')].filter((e) => vis(e) && !e.disabled && e.getAttribute("aria-disabled") !== "true");
+  // "Next" is unambiguous; "Continue"/"Review" only count when the page clearly shows steps,
+  // because on some sites "Continue" is the final submit.
+  const strongNext = /^(next|save (and|&) continue|save (and|&) next|next step|التالي)$/i;
+  const weakNext = /^(continue|proceed|review|متابعة)$/i;
+  const body = ((document.body && document.body.innerText) || "").slice(0, 8000);
+  const stepped = /\bstep \d+ of \d+\b|\b\d+ of \d+ steps\b|الخطوة \d+/i.test(body) || !!document.querySelector('[aria-current="step"], [role=progressbar], [data-automation-id*="progressBar"], [class*="stepper"], [class*="progress-step"]');
+  const submitRe = /^(submit( (application|my application))?|apply|send( application)?|complete( application)?|finish|إرسال|تقديم)$/i;
+  const wdNext = (e) => /^(bottom-navigation-next-button|pageFooterNextButton)$/.test(e.getAttribute("data-automation-id") || "");
+  const next = btns.find((e) => !submitRe.test(txt(e)) && (strongNext.test(txt(e)) || wdNext(e) || (stepped && weakNext.test(txt(e)))));
+  const submit = btns.find((e) => submitRe.test(txt(e)));
+  if (next) next.setAttribute("data-cf-next", "1");
+  return { next: !!next, submit: !!submit };
+})()`;
+
+/** Visible options of an open listbox. */
+export const LISTBOX_OPTIONS = String.raw`(() => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  return [...document.querySelectorAll('[role=listbox] [role=option], [role=option]')].filter(vis).map((o) => (o.innerText || o.textContent || "").replace(/\s+/g, " ").trim()).filter((t) => t && !/^(select one|select|none)$/i.test(t)).slice(0, 80);
 })()`;

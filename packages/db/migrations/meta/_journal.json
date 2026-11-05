@@ -36,6 +36,13 @@
       "when": 1793838510501,
       "tag": "0004_autopilot",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793841083412,
+      "tag": "0005_portal_logins",
+      "breakpoints": true
     }
   ]
 }

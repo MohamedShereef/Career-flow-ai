@@ -8,11 +8,12 @@ import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { applications, cvTailorings, jobs, pendingQuestions, submissionEvidence, submissionLedger } from "@careerflow/db";
-import { ai, answers, autoapply, profile, settings, sha256 } from "@careerflow/core";
+import { ai, answers, autoapply, logins, profile, settings, sha256 } from "@careerflow/core";
 import { renderCvPdf } from "../../../packages/core/src/cv-pdf";
 import { getStorage } from "../../../packages/core/src/storage";
 import { documents } from "@careerflow/db";
 import { applyHandlers } from "../src/apply/handlers";
+import { PORTAL_HTML, PORTAL_USER } from "./portal-mock";
 import type { HandlerContext } from "../src/handlers";
 import { closeDb, makeUser, testDb } from "../../../test/helpers";
 
@@ -22,6 +23,7 @@ const run = chrome && existsSync(chrome) ? describe : describe.skip;
 let server: Server;
 let base = "";
 const received: Array<Record<string, string>> = [];
+const portalSubmissions: Array<Record<string, string>> = [];
 
 const FORM = (extra = "") => `<!doctype html><html><head><title>Senior Procurement Engineer – Acme Giga</title></head><body>
 <h1>Senior Procurement Engineer</h1>
@@ -50,6 +52,24 @@ beforeAll(async () => {
     if (req.url === "/jobs/1/apply") {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(FORM());
+    }
+    if (req.url === "/portal" || req.url === "/portal/job/77") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(PORTAL_HTML);
+    }
+    if ((req.url === "/portal/login" || req.url === "/portal/submit") && req.method === "POST") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const j = JSON.parse(body || "{}");
+        if (req.url === "/portal/login") {
+          res.writeHead(j.e === PORTAL_USER.email && j.p === PORTAL_USER.password ? 200 : 401).end();
+        } else {
+          portalSubmissions.push(j);
+          res.writeHead(200).end("{}");
+        }
+      });
+      return;
     }
     if (req.url === "/login") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -170,6 +190,58 @@ run("auto-apply in a real browser", () => {
     expect(r.blocked).toBe("login_required");
     const [a] = await db.select().from(applications).where(eq(applications.id, app.id));
     expect(a!.status).toBe("needs_user_action");
-    expect(a!.statusReason).toMatch(/sign in/i);
+    expect(a!.statusReason).toMatch(/needs an account/i);
+    expect((a!.checkpointData as { loginHost?: string }).loginHost).toBe("127.0.0.1");
   }, 60_000);
+
+  it("signs in to a Workday-style portal with the saved login, walks 3 steps, and submits once after approval", async () => {
+    const db = testDb();
+    const { user, job } = await setup("/portal/job/77");
+    ai.setAiTransportForTests(async (req) => {
+      const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1]!) as Array<{ key: string }>;
+      return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: qs.map((q) => ({ key: q.key, answer: null })) }) };
+    });
+    await profile.updateProfile(db, user.id, { residencyCountry: "Saudi Arabia" });
+    const host = "127.0.0.1";
+
+    // 1) No saved login: stops and asks for one, naming the portal.
+    const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r0 = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { blocked?: string };
+    expect(r0.blocked).toBe("login_required");
+    let [a] = await db.select().from(applications).where(eq(applications.id, app.id));
+    expect((a!.checkpointData as { loginHost?: string }).loginHost).toBe(host);
+
+    // 2) Wrong password: reports it, doesn't loop.
+    await logins.saveLogin(db, user.id, { url: `http://${host}/portal`, username: PORTAL_USER.email, password: "wrong" });
+    await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r1 = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { blocked?: string };
+    expect(r1.blocked).toBe("login_failed");
+    expect((await logins.listLogins(db, user.id))[0]!.lastResult).toBe("failed");
+
+    // 3) Correct login: signs in (switching from Create Account), fills step 1, asks the step-2 question once.
+    await logins.saveLogin(db, user.id, { url: `http://${host}/portal`, username: PORTAL_USER.email, password: PORTAL_USER.password });
+    await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r2 = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { waiting?: number; step?: number };
+    expect(r2).toMatchObject({ waiting: 1, step: 1 });
+    const open = await answers.listPendingQuestions(db, user.id);
+    const q = open.find((x) => /authorized to work in Saudi/i.test(x.questionText))!;
+    expect(q.options).toEqual(["Yes", "No"]);
+    await answers.answerPendingQuestion(db, user.id, q.id, { answer: "Yes", scope: "global" });
+    await autoapply.resumeWaiting(db, user.id);
+
+    const r3 = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { previewId?: string; steps?: number };
+    expect(r3.steps).toBe(3);
+    const d = await autoapply.getDetail(db, user.id, app.id);
+    const labels = d.preview!.data.answers.map((x) => `${x.label}=${x.value.kind === "text" ? x.value.value : x.value.kind}`);
+    expect(labels).toEqual(expect.arrayContaining(["Given Name(s)=Mohamed", "Family Name=Shereef Farouk", "Country=Saudi Arabia", "Resume/CV=file", "Are you legally authorized to work in Saudi Arabia?=Yes"]));
+    expect(portalSubmissions).toHaveLength(0);
+    expect((await logins.listLogins(db, user.id))[0]!.lastResult).toBe("ok");
+
+    const ap = await autoapply.approve(db, user.id, r3.previewId!);
+    const r4 = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
+    expect(r4.outcome).toBe("confirmed");
+    expect(portalSubmissions).toEqual([{ first: "Mohamed", last: "Shereef Farouk", country: "Saudi Arabia", phone: "+966 50 000 0000", auth: "Yes", resume: "Mohamed_CV.pdf" }]);
+    [a] = await db.select().from(applications).where(eq(applications.id, app.id));
+    expect(a!.status).toBe("submitted_unverified");
+  }, 180_000);
 });

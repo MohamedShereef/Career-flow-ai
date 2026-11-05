@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Frame, type Page } from "playwright-core";
 import type { autoapply } from "@careerflow/core";
-import { BOT_CHECK, EXTRACT, FIND_APPLY, FIND_SUBMIT, OPTION_INDEX, OUTCOME, READBACK } from "./page-scripts";
+import { BOT_CHECK, EXTRACT, FIND_APPLY, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OPTION_INDEX, OUTCOME, READBACK } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -57,8 +57,11 @@ interface RawSnapshot {
   title: string;
 }
 
-const looksLikeApplication = (fields: FormSnapshot["fields"]) =>
-  fields.some((f) => f.type === "file") || (fields.some((f) => f.type === "email" || /e-?mail/i.test(f.label)) && fields.length >= 3);
+const looksLikeApplication = (fields: FormSnapshot["fields"], signedIn = false) =>
+  fields.some((f) => f.type === "file") ||
+  (fields.some((f) => f.type === "email" || /e-?mail/i.test(f.label)) && fields.length >= 3) ||
+  // Inside a candidate portal after sign-in, the first step may only ask for name/phone/country.
+  (signedIn && fields.filter((f) => f.type !== "checkbox").length >= 2);
 
 /** Extract from the page and every embedded frame (career sites often embed the ATS form in an iframe). */
 async function extractBest(page: Page): Promise<{ frame: Frame; raw: RawSnapshot; frames: number }> {
@@ -77,8 +80,75 @@ async function extractBest(page: Page): Promise<{ frame: Frame; raw: RawSnapshot
   return { ...best, frames: frames.length };
 }
 
-/** Open the apply link and return the application form, following an "Apply" button if needed. */
-export async function openForm(s: Session, url: string, atsKind: string): Promise<{ snapshot: FormSnapshot; page: Page; form: Frame }> {
+export interface Credentials {
+  username: string;
+  password: string;
+}
+export type LoginLookup = (host: string) => Promise<Credentials | null>;
+export type LoginOutcome = "ok" | "failed" | "verification_required" | "no_sign_in";
+
+interface LoginInfo { passwords: number; createMode: boolean; canSwitch: boolean; hasUser: boolean; hasSubmit: boolean; verification: boolean; errors: string[] }
+
+/** Sign in with the user's saved portal account. Switches from "Create account" to "Sign in" when needed. */
+export async function signIn(page: Page, cred: Credentials): Promise<{ outcome: LoginOutcome; errors: string[] }> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let info = (await page.evaluate(LOGIN_INFO)) as LoginInfo;
+    if (info.verification && !info.passwords) return { outcome: "verification_required", errors: [] };
+    if (!info.passwords) return { outcome: "ok", errors: [] };
+    if (info.createMode) {
+      if (!info.canSwitch) return { outcome: "no_sign_in", errors: [] };
+      await page.locator('[data-cf-login="switch"]').first().click({ timeout: 5000 }).catch(() => undefined);
+      await settle(page);
+      continue;
+    }
+    if (info.hasUser) await page.locator('[data-cf-login="user"]').first().fill(cred.username);
+    await page.locator('[data-cf-login="pass"]').first().fill(cred.password);
+    if (info.hasSubmit) await page.locator('[data-cf-login="submit"]').first().click({ timeout: 8000 });
+    else await page.locator('[data-cf-login="pass"]').first().press("Enter");
+    for (let i = 0; i < 8; i++) {
+      await sleep(1000);
+      info = (await page.evaluate(LOGIN_INFO).catch(() => null)) as LoginInfo | null ?? info;
+      if (info.verification) return { outcome: "verification_required", errors: [] };
+      if (!info.passwords) break;
+      if (info.errors.length && i >= 1) break; // the portal already said the login is wrong
+    }
+    await settle(page);
+    if (info.verification) return { outcome: "verification_required", errors: [] };
+    if (info.passwords && !info.createMode) return { outcome: "failed", errors: info.errors };
+    if (!info.passwords) return { outcome: "ok", errors: [] };
+  }
+  return { outcome: "failed", errors: [] };
+}
+
+/** Open each custom dropdown once to learn its options. */
+async function readListboxOptions(form: Frame, page: Page, fields: FormSnapshot["fields"]) {
+  for (const f of fields) {
+    if (f.type !== "listbox") continue;
+    const loc = form.locator(`[data-cf-key="${f.key.replace(/"/g, '\\"')}"]`).first();
+    try {
+      await loc.click({ timeout: 4000 });
+      await sleep(500);
+      const inFrame = (await form.evaluate(LISTBOX_OPTIONS).catch(() => [])) as string[];
+      f.options = inFrame.length ? inFrame : ((await page.evaluate(LISTBOX_OPTIONS).catch(() => [])) as string[]);
+      await page.keyboard.press("Escape");
+      await sleep(200);
+    } catch {
+      f.options = [];
+    }
+  }
+}
+
+export interface OpenResult {
+  snapshot: FormSnapshot;
+  page: Page;
+  form: Frame;
+  login?: { host: string; outcome: LoginOutcome };
+}
+
+const hostOf = (u: string) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+
+/** Open the apply link and return the application form: follows "Apply" buttons and signs in with a saved login. */
+export async function openForm(s: Session, url: string, atsKind: string, opts: { login?: LoginLookup } = {}): Promise<OpenResult> {
   let page = s.page;
   let status = 0;
   try {
@@ -92,11 +162,29 @@ export async function openForm(s: Session, url: string, atsKind: string): Promis
 
   let found = await extractBest(page);
   const visited: string[] = [page.url()];
-  for (let hop = 0; hop < 3 && !looksLikeApplication(found.raw.fields) && !found.raw.password && !found.raw.captcha; hop++) {
+  let login: OpenResult["login"];
+  const isForm = () => looksLikeApplication(found.raw.fields, login?.outcome === "ok" && !found.raw.password);
+  for (let hop = 0; hop < 5 && !isForm() && !found.raw.captcha; hop++) {
+    if (found.raw.password) {
+      const host = hostOf(page.url());
+      if (login?.outcome === "ok" && login.host === host) break; // signed in but still a password form: don't loop
+      const cred = opts.login ? await opts.login(host) : null;
+      if (!cred) {
+        login = { host, outcome: "no_sign_in" };
+        break;
+      }
+      const r = await signIn(page, cred);
+      login = { host, outcome: r.outcome };
+      if (r.outcome !== "ok") break;
+      await settle(page);
+      found = await extractBest(page);
+      visited.push(page.url());
+      continue;
+    }
     const n = (await page.evaluate(FIND_APPLY)) as number;
     if (!n) break;
     const target = page.locator('[data-cf-apply="0"]');
-    const popup = s.context.waitForEvent("page", { timeout: 5000 }).catch(() => null);
+    const popup = s.context.waitForEvent("page", { timeout: 2500 }).catch(() => null);
     await target.click({ timeout: 5000 }).catch(() => undefined);
     const newPage = await popup;
     if (newPage) page = newPage;
@@ -107,16 +195,49 @@ export async function openForm(s: Session, url: string, atsKind: string): Promis
   }
 
   const { raw, frame } = found;
-  const host = (u: string) => { try { return new URL(u).hostname; } catch { return ""; } };
   const formAts = frame === page.mainFrame() ? atsKind : (await import("@careerflow/core")).autoapply.atsFromUrl(frame.url());
   const blockers: FormSnapshot["blockers"] = [];
-  const where = `pages: ${[...new Set(visited.map(host))].join(" → ")}; title: "${raw.title.slice(0, 80)}"; frames: ${found.frames}; fields: ${raw.fields.length}`;
-  const botCheck = !looksLikeApplication(raw.fields) && ((await page.evaluate(BOT_CHECK).catch(() => false)) as boolean || status === 403 || status === 429);
+  const where = `pages: ${[...new Set(visited.map(hostOf))].join(" → ")}; title: "${raw.title.slice(0, 80)}"; frames: ${found.frames}; fields: ${raw.fields.length}`;
+  const botCheck = !isForm() && ((await page.evaluate(BOT_CHECK).catch(() => false)) as boolean || status === 403 || status === 429);
   if (raw.captcha) blockers.push({ kind: "captcha", detail: `CAPTCHA widget on the page (${where})` });
+  else if (login && login.outcome === "failed") blockers.push({ kind: "login_failed", detail: `Sign-in rejected on ${login.host}`, host: login.host });
+  else if (login && login.outcome === "verification_required") blockers.push({ kind: "verification_required", detail: `Verification asked on ${login.host}`, host: login.host });
   else if (botCheck) blockers.push({ kind: "captcha", detail: `Robot check / blocked automated access (HTTP ${status || "?"}; ${where})` });
-  else if (raw.password && !looksLikeApplication(raw.fields)) blockers.push({ kind: "login_required", detail: `Sign-in form shown (${where})` });
-  else if (!looksLikeApplication(raw.fields)) blockers.push({ kind: "form_missing", detail: `No application form found (${where}). Fields seen: ${raw.fields.slice(0, 8).map((f) => f.label || f.type).join(", ")}` });
-  return { page, form: frame, snapshot: { url: page.url(), atsKind: formAts, pageTitle: raw.title, fields: raw.fields, blockers } };
+  else if (raw.password && !isForm()) blockers.push({ kind: "login_required", detail: `Sign-in form shown (${where})`, host: hostOf(page.url()) });
+  else if (!isForm()) blockers.push({ kind: "form_missing", detail: `No application form found (${where}). Fields seen: ${raw.fields.slice(0, 8).map((f) => f.label || f.type).join(", ")}` });
+  if (!blockers.length) await readListboxOptions(frame, page, raw.fields);
+  return { page, form: frame, login, snapshot: { url: page.url(), atsKind: formAts, pageTitle: raw.title, fields: raw.fields, blockers } };
+}
+
+/** Multi-page forms: what's on the current step? */
+export async function readStep(page: Page): Promise<{ form: Frame; fields: FormSnapshot["fields"] }> {
+  const found = await extractBest(page);
+  await readListboxOptions(found.frame, page, found.raw.fields);
+  return { form: found.frame, fields: found.raw.fields };
+}
+
+/** Is there a "Next" (another step) or only the final "Submit"? */
+export async function navState(form: Frame) {
+  return (await form.evaluate(FIND_NAV)) as { next: boolean; submit: boolean };
+}
+
+/** Press "Next" and report validation errors if the step didn't advance. */
+export async function goNext(form: Frame, page: Page): Promise<{ ok: boolean; errors: string[]; submitted?: { url: string; summary: string; screenshot: Buffer | null } }> {
+  const before = (await form.evaluate(EXTRACT)) as RawSnapshot;
+  const sig = (r: RawSnapshot) => r.fields.map((f) => f.key).join("|");
+  await form.locator("[data-cf-next]").first().click({ timeout: 10_000 });
+  for (let i = 0; i < 15; i++) {
+    await sleep(1000);
+    const after = (await page.evaluate(OUTCOME).catch(() => null)) as { confirmed: boolean; confirmation: string } | null;
+    if (after?.confirmed) {
+      // The site treated "Next" as the final submit. Report it truthfully.
+      return { ok: false, errors: [], submitted: { url: page.url(), summary: after.confirmation, screenshot: await screenshot(page).catch(() => null) } };
+    }
+    const now = (await extractBest(page).catch(() => null))?.raw;
+    if (now && sig(now) !== sig(before)) return { ok: true, errors: [] };
+  }
+  const out = (await form.evaluate(OUTCOME).catch(() => null)) as { errors: string[] } | null;
+  return { ok: false, errors: out?.errors?.length ? out.errors : ["The form didn't move to the next step"] };
 }
 
 export interface Files {
@@ -145,6 +266,13 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
         const f = files[v.doc];
         if (!f) throw new Error("file not available");
         await loc.first().setInputFiles(f.path);
+      } else if (a.type === "listbox" && v.kind === "text") {
+        await loc.first().click();
+        await sleep(400);
+        const opt = page.getByRole("option", { name: v.value, exact: true }).first();
+        if (await opt.isVisible().catch(() => false)) await opt.click();
+        else await form.getByRole("option", { name: v.value, exact: true }).first().click({ timeout: 4000 });
+        await sleep(300);
       } else if (a.type === "select" && v.kind === "text") {
         await loc.first().selectOption({ label: v.value });
       } else if ((a.type === "radio" || a.type === "checkbox_group") && (v.kind === "text" || v.kind === "multi")) {

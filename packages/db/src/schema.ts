@@ -931,6 +931,29 @@ export const cvTailorings = pgTable(
   (t) => [index("cv_tailorings_user_idx").on(t.userId, t.createdAt)],
 );
 
+// ───────────────────────────── Saved portal logins ─────────────────────────────
+
+/**
+ * The user's own account on an employer's application portal (Workday, SuccessFactors…).
+ * Encrypted per user + host; only ever used on that exact host.
+ */
+export const portalLogins = pgTable(
+  "portal_logins",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    host: text("host").notNull(),
+    label: text("label"),
+    usernameEnc: text("username_enc").notNull(),
+    passwordEnc: text("password_enc").notNull(),
+    lastUsedAt: ts("last_used_at"),
+    lastResult: text("last_result"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("portal_logins_user_host_uq").on(t.userId, t.host)],
+);
+
 // ───────────────────────────── Employer vetting ─────────────────────────────
 
 /** One AI assessment per employer, shared by all users and refreshed periodically. */

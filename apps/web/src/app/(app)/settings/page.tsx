@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { SOURCE_HELP, auth, autoapply, dashboard, discovery, settings } from "@careerflow/core";
+import { SOURCE_HELP, auth, autoapply, dashboard, discovery, logins, settings } from "@careerflow/core";
 import { changePasswordAction, signOutOtherSessionsAction } from "@/actions/auth";
-import { autopilotAction } from "@/actions/applications";
+import { autopilotAction, deleteLoginAction, saveLoginAction } from "@/actions/applications";
 import { consentAction, saveAutomationAction } from "@/actions/profile";
 import { addSourceAction, toggleSourceAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
@@ -11,7 +11,7 @@ import { requireUser } from "@/lib/session";
 
 export const metadata = { title: "Settings" };
 
-const TABS = [["automation", "Automation & limits"], ["sources", "Job sources"], ["consent", "Consent"], ["integrations", "Integrations"], ["security", "Security"], ["diagnostics", "Diagnostics"]] as const;
+const TABS = [["automation", "Automation & limits"], ["sources", "Job sources"], ["logins", "Saved logins"], ["consent", "Consent"], ["integrations", "Integrations"], ["security", "Security"], ["diagnostics", "Diagnostics"]] as const;
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const user = await requireUser();
@@ -108,10 +108,49 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       )}
 
       {tab === "sources" && <Sources />}
+      {tab === "logins" && <SavedLogins userId={user.id} />}
       {tab === "integrations" && <Integrations />}
       {tab === "security" && <Security userId={user.id} />}
       {tab === "diagnostics" && <Diagnostics />}
     </>
+  );
+}
+
+async function SavedLogins({ userId }: { userId: string }) {
+  const rows = await logins.listLogins(db(), userId);
+  const RESULT: Record<string, [string, "good" | "bad" | "attention"]> = { ok: ["Signed in OK", "good"], failed: ["Sign-in failed", "bad"], verification_required: ["Needs verification", "attention"] };
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <Card title="Employer portals" description="Workday, SuccessFactors and similar portals need an account per employer. Create the account there yourself once; CareerFlow then signs in with it to fill applications — only on that exact site.">
+        {rows.length === 0 ? (
+          <EmptyState title="No saved logins">Add one when an application asks for it, or below.</EmptyState>
+        ) : (
+          <ul className="divide-y divide-line">
+            {rows.map((r) => (
+              <li key={r.id} className="flex items-center justify-between gap-3 py-3 text-sm">
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{r.label || r.host}</div>
+                  <div className="truncate text-xs text-muted">{r.host} · {r.username}{r.lastUsedAt ? ` · used ${fmtDate(r.lastUsedAt)}` : ""}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {r.lastResult && RESULT[r.lastResult] && <Badge tone={RESULT[r.lastResult]![1]}>{RESULT[r.lastResult]![0]}</Badge>}
+                  <form action={deleteLoginAction}><input type="hidden" name="id" value={r.id} /><button className="btn-danger">Remove</button></form>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+      <Card title="Add a portal login" description="Use a password unique to these portals — never your Gmail or bank password. Stored encrypted; never shown again.">
+        <ActionForm action={saveLoginAction} className="space-y-4">
+          <Field label="Portal link" name="url" placeholder="https://kbr.wd5.myworkdayjobs.com/KBR_Careers" required />
+          <Field label="Name (optional)" name="label" placeholder="KBR careers" />
+          <Field label="Email or username on that portal" name="username" autoComplete="off" required />
+          <Field label="Password on that portal" name="password" type="password" autoComplete="new-password" required />
+          <SubmitButton>Save login</SubmitButton>
+        </ActionForm>
+      </Card>
+    </div>
   );
 }
 

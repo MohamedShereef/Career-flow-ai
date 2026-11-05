@@ -28,6 +28,7 @@ import {
   jobEvaluations,
   jobs,
   pendingQuestions,
+  portalLogins,
   submissionEvidence,
   submissionLedger,
 } from "@careerflow/db";
@@ -46,7 +47,7 @@ import { getSettings } from "./settings";
 
 // ───────────────────────── Types shared with the worker ─────────────────────────
 
-export type FieldType = "text" | "email" | "tel" | "url" | "number" | "date" | "textarea" | "select" | "combobox" | "radio" | "checkbox" | "checkbox_group" | "file";
+export type FieldType = "text" | "email" | "tel" | "url" | "number" | "date" | "textarea" | "select" | "listbox" | "combobox" | "radio" | "checkbox" | "checkbox_group" | "file";
 
 export interface FormField {
   /** Stable across visits: derived from the field's name/id/label, not its position. */
@@ -58,7 +59,12 @@ export interface FormField {
   accept?: string | null;
 }
 
-export type Blocker = { kind: "captcha" | "login_required" | "form_missing" | "unsupported_ats" | "navigation_timeout" | "fill_failed" | "job_board"; detail: string };
+export type Blocker = {
+  kind: "captcha" | "login_required" | "login_failed" | "verification_required" | "form_missing" | "unsupported_ats" | "navigation_timeout" | "fill_failed" | "job_board";
+  detail: string;
+  /** The portal that asked for a sign-in, so the user can save a login for it. */
+  host?: string;
+};
 
 export interface FormSnapshot {
   url: string;
@@ -119,7 +125,7 @@ function asValue(field: FormField, raw: string): AnswerValue | null {
     const picks = v.split(/[;,\n]/).map((x) => bestOption(field.options, x)).filter((x): x is string => !!x);
     return picks.length ? { kind: "multi", values: [...new Set(picks)] } : null;
   }
-  if (field.type === "select" || field.type === "radio") {
+  if (field.type === "select" || field.type === "radio" || field.type === "listbox") {
     const o = bestOption(field.options, v);
     return o ? { kind: "text", value: o } : null;
   }
@@ -197,7 +203,7 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
     const sensitivity = answersSvc.classifySensitivity(f.label);
 
     if (f.type === "file") {
-      if (isResume(l) || (!isCoverLetter(l) && f.required && !answers.some((a) => a.value.kind === "file" && a.value.doc === "cv"))) {
+      if (isResume(l) || (!isCoverLetter(l) && !answers.some((a) => a.value.kind === "file" && a.value.doc === "cv"))) {
         answers.push({ key: f.key, label: f.label, type: f.type, value: { kind: "file", doc: "cv" }, source: "document", needsReview: false });
       } else if (isCoverLetter(l) && ctx.hasCoverLetter) {
         answers.push({ key: f.key, label: f.label, type: f.type, value: { kind: "file", doc: "cover_letter" }, source: "document", needsReview: false });
@@ -408,6 +414,11 @@ export async function startAutoApply(db: Db, userId: string, input: { jobId: str
     }
     if (atsFromUrl(applyUrl) === "linkedin") throw new AppError("linkedin", "CareerFlow doesn't apply through LinkedIn. Paste the employer's own careers-site link.");
   }
+  if (!applyUrl) {
+    // Keep an employer link found or pasted on an earlier attempt.
+    const [prev] = await db.select({ cp: applications.checkpointData }).from(applications).where(and(eq(applications.userId, userId), eq(applications.jobId, job.id)));
+    applyUrl = (prev?.cp as { applyUrl?: string } | null)?.applyUrl ?? null;
+  }
   const ats = atsFromUrl(applyUrl ?? job.applyUrl);
   const cpData = { tailoringId: t.id, origin: input.origin ?? "user", ats, ...(applyUrl ? { applyUrl } : {}) };
   const [app] = await db
@@ -422,7 +433,7 @@ export async function startAutoApply(db: Db, userId: string, input: { jobId: str
 
   await db.update(approvals).set({ invalidatedAt: new Date(), invalidatedReason: "restarted" }).where(and(eq(approvals.applicationId, app!.id), isNull(approvals.consumedAt), isNull(approvals.invalidatedAt)));
   await event(db, userId, app!.id, "status_change", "start", input.origin === "autopilot" ? "Autopilot started this application." : "You asked CareerFlow to apply.");
-  await queue.enqueue(db, { kind: "application.prepare", userId, payload: { applicationId: app!.id }, dedupeKey: `apply:prepare:${app!.id}`, maxAttempts: 2, timeoutSeconds: 600 });
+  await queue.enqueue(db, { kind: "application.prepare", userId, payload: { applicationId: app!.id }, dedupeKey: `apply:prepare:${app!.id}`, maxAttempts: 2, timeoutSeconds: 900 });
   return app!;
 }
 
@@ -453,7 +464,9 @@ export async function loadContext(db: Db, applicationId: string) {
 
 const ERROR_TEXT: Record<Blocker["kind"], string> = {
   captcha: "The page shows a robot check (CAPTCHA / “verify you are human”). CareerFlow doesn't bypass those. Open it yourself and apply with your CV — or paste the employer's own application link below.",
-  login_required: "This employer asks you to sign in or create an account before applying. Open the page, sign in, and apply with your CV.",
+  login_required: "This employer's portal needs an account. Create one there yourself (once), then save its email and password below — CareerFlow signs in and continues the application.",
+  login_failed: "The saved login didn't work on this portal. Check the email and password in Settings → Saved logins (or reset it on the portal), then try again.",
+  verification_required: "The portal asked for a verification code or email confirmation. Sign in there once yourself to complete it, then press “Try automatic again”.",
   form_missing: "We couldn't find an application form on the employer's page. Open it and apply with your CV.",
   unsupported_ats: "This application system isn't supported for automatic filling yet. Open the page and apply with your CV.",
   job_board: "This link goes to a job site that reposts jobs, not the employer's own application page, and it doesn't link through to one. Find the job on the employer's careers site and paste that link below — CareerFlow continues from there.",
@@ -464,13 +477,14 @@ const ERROR_TEXT: Record<Blocker["kind"], string> = {
 export async function recordBlocker(db: Db, applicationId: string, b: Blocker, taskId?: string) {
   const [a] = await db.select().from(applications).where(eq(applications.id, applicationId));
   if (!a) return;
-  const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch", job_board: "unsupported_ats" } as const)[b.kind];
+  const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch", job_board: "unsupported_ats", login_failed: "login_required", verification_required: "login_required" } as const)[b.kind];
   const [err] = await db
     .insert(errorRecords)
     .values({ userId: a.userId, applicationId, taskId: taskId ?? null, stage: "prepare", category, rootCauseKey: `${category}:${a.employerKey}`, userMessage: ERROR_TEXT[b.kind], technicalDetail: { detail: b.detail } })
     .returning();
   const reason = b.kind === "fill_failed" ? `${ERROR_TEXT.fill_failed} (${b.detail.slice(0, 300)})` : ERROR_TEXT[b.kind];
-  await db.update(applications).set({ status: "needs_user_action", statusReason: reason, checkpoint: `blocked_${b.kind}`, lastErrorId: err!.id, updatedAt: new Date() }).where(eq(applications.id, applicationId));
+  const cp = { ...((a.checkpointData as Record<string, unknown> | null) ?? {}), ...(b.host ? { loginHost: b.host } : {}) };
+  await db.update(applications).set({ status: "needs_user_action", statusReason: reason, checkpoint: `blocked_${b.kind}`, checkpointData: cp, lastErrorId: err!.id, updatedAt: new Date() }).where(eq(applications.id, applicationId));
   await event(db, a.userId, applicationId, "error", "prepare", reason, { detail: b.detail });
 }
 
@@ -497,7 +511,7 @@ export async function resumeWaiting(db: Db, userId: string) {
     if ((open?.n ?? 0) > 0) continue;
     await db.update(applications).set({ status: "processing", statusReason: null, checkpoint: "queued_prepare", updatedAt: new Date() }).where(eq(applications.id, w.id));
     await event(db, userId, w.id, "status_change", "prepare", "All questions answered — continuing.");
-    await queue.enqueue(db, { kind: "application.prepare", userId, payload: { applicationId: w.id }, dedupeKey: `apply:prepare:${w.id}`, maxAttempts: 2, timeoutSeconds: 600 });
+    await queue.enqueue(db, { kind: "application.prepare", userId, payload: { applicationId: w.id }, dedupeKey: `apply:prepare:${w.id}`, maxAttempts: 2, timeoutSeconds: 900 });
     resumed++;
   }
   return resumed;
@@ -505,7 +519,7 @@ export async function resumeWaiting(db: Db, userId: string) {
 
 export async function savePreview(
   db: Db,
-  input: { applicationId: string; url: string; atsKind: string; answers: PlannedAnswer[]; screenshot: Buffer; skippedOptional: number },
+  input: { applicationId: string; url: string; atsKind: string; answers: PlannedAnswer[]; screenshot: Buffer; skippedOptional: number; steps?: number },
 ) {
   const { app } = await loadContext(db, input.applicationId);
   const [cv, cover] = await Promise.all([
@@ -524,7 +538,7 @@ export async function savePreview(
         applicationId: app.id,
         version: v + 1,
         contentHash: hash,
-        answersEnc: encrypt(JSON.stringify({ url: input.url, atsKind: input.atsKind, answers: input.answers, skippedOptional: input.skippedOptional }), aadPreview(app.userId, app.id)),
+        answersEnc: encrypt(JSON.stringify({ url: input.url, atsKind: input.atsKind, answers: input.answers, skippedOptional: input.skippedOptional, steps: input.steps ?? 1 }), aadPreview(app.userId, app.id)),
         resumeDocumentId: app.tailoredCvDocumentId,
         coverLetterDocumentId: app.coverLetterDocumentId,
         screenshotDocumentId: shot.id,
@@ -538,7 +552,7 @@ export async function savePreview(
 }
 
 function readPreview(p: typeof applicationPreviews.$inferSelect) {
-  return JSON.parse(decrypt(p.answersEnc, aadPreview(p.userId, p.applicationId))) as { url: string; atsKind: string; answers: PlannedAnswer[]; skippedOptional: number };
+  return JSON.parse(decrypt(p.answersEnc, aadPreview(p.userId, p.applicationId))) as { url: string; atsKind: string; answers: PlannedAnswer[]; skippedOptional: number; steps?: number };
 }
 
 // ───────────────────────── Approval & submission ─────────────────────────
@@ -590,7 +604,7 @@ export async function approve(db: Db, userId: string, previewId: string, actor: 
     if (tailoringId) await tx.update(cvTailorings).set({ approvedAt: sql`coalesce(${cvTailorings.approvedAt}, now())` }).where(eq(cvTailorings.id, tailoringId));
     await event(tx, userId, a.id, "user_action", "approve", actor === "user" ? "You approved this application for submission." : "Approved automatically by autopilot (every answer came from your profile or saved answers).");
     await audit(tx, { userId, actor, action: "application.approved", entityType: "application", entityId: a.id, metadata: { previewId: p.id, contentHash: p.contentHash } });
-    await queue.enqueue(tx, { kind: "application.submit", userId, payload: { applicationId: a.id, approvalId: ap!.id }, dedupeKey: `apply:submit:${a.id}`, maxAttempts: 3, timeoutSeconds: 600 });
+    await queue.enqueue(tx, { kind: "application.submit", userId, payload: { applicationId: a.id, approvalId: ap!.id }, dedupeKey: `apply:submit:${a.id}`, maxAttempts: 3, timeoutSeconds: 900 });
     return ap!;
   });
 }
@@ -743,7 +757,15 @@ export async function autopilotCandidates(db: Db, userId: string, limit: number)
     .orderBy(desc(jobEvaluations.score))
     .limit(limit * 4);
   // Job-board-only links rarely reach a form; leave those for the user.
-  return rows.filter((r) => (SUPPORTED_ATS as readonly string[]).includes(atsFromUrl(r.j.applyUrl)) && !!r.j.description).slice(0, limit);
+  // Account portals (Workday, SuccessFactors…) qualify once the user saved a login for that portal.
+  const saved = new Set((await db.select({ host: portalLogins.host }).from(portalLogins).where(eq(portalLogins.userId, userId))).map((r) => r.host));
+  const host = (u: string) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+  return rows
+    .filter((r) => {
+      const k = atsFromUrl(r.j.applyUrl);
+      return !!r.j.description && ((SUPPORTED_ATS as readonly string[]).includes(k) || (["workday", "successfactors", "oracle"].includes(k) && saved.has(host(r.j.applyUrl))));
+    })
+    .slice(0, limit);
 }
 
 // ───────────────────────── Autopilot switches ─────────────────────────
@@ -770,4 +792,21 @@ export async function useEmployerLink(db: Db, applicationId: string, url: string
   const data = { ...((a.checkpointData as Record<string, unknown> | null) ?? {}), applyUrl: url, ats: atsFromUrl(url) };
   await db.update(applications).set({ checkpointData: data, updatedAt: new Date() }).where(eq(applications.id, applicationId));
   await event(db, a.userId, applicationId, "browser_action", "prepare", note, { url });
+}
+
+/**
+ * A site submitted the application when "Next" was pressed during preparation.
+ * Record it exactly as it happened: sent, without the final approval step.
+ */
+export async function recordUnplannedSubmit(db: Db, applicationId: string, info: { url: string; summary: string; screenshot: Buffer | null }) {
+  const { app, job } = await loadContext(db, applicationId);
+  const shot = info.screenshot ? await storeFile(db, app.userId, "evidence_screenshot", info.screenshot, "image/png", "after-next.png", "Page after pressing Next") : null;
+  await db.transaction(async (tx) => {
+    const now = new Date();
+    await tx.insert(submissionLedger).values({ userId: app.userId, jobDedupeKey: job.dedupeKey, employerKey: app.employerKey, applicationId, state: "submitted" }).onConflictDoUpdate({ target: [submissionLedger.userId, submissionLedger.jobDedupeKey], set: { state: "submitted", applicationId, updatedAt: now } });
+    await tx.update(applications).set({ status: "submitted_unverified", statusReason: "The employer's site sent the application when CareerFlow pressed “Next”, before your final review.", submittedAt: now, websiteAcknowledgedAt: now, checkpoint: "submitted", updatedAt: now }).where(eq(applications.id, applicationId));
+    await tx.insert(submissionEvidence).values({ userId: app.userId, applicationId, kind: "confirmation_page", level: "website", summary: info.summary || "Confirmation shown", url: info.url, documentId: shot?.id ?? null });
+    await event(tx, app.userId, applicationId, "error", "prepare", "Heads-up: this employer's form submitted on “Next” (no separate Submit step). It was sent with the answers shown here, before your final approval.");
+    await audit(tx, { userId: app.userId, actor: "agent", action: "application.unplanned_submit", entityType: "application", entityId: applicationId, metadata: { url: info.url } });
+  });
 }

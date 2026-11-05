@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AppError, autoapply } from "@careerflow/core";
-import { approveApplicationAction, cancelApplicationAction, resolveUncertainAction, retryApplicationAction, useApplyLinkAction } from "@/actions/applications";
+import { approveApplicationAction, cancelApplicationAction, resolveUncertainAction, retryApplicationAction, saveLoginAction, useApplyLinkAction } from "@/actions/applications";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { Badge, Card, Field, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
@@ -57,6 +57,8 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
   let applyHost = "";
   try { applyHost = new URL(applyUrl).hostname.replace(/^www\./, ""); } catch {}
   const onBoard = autoapply.isJobBoardUrl(applyUrl);
+  const loginHost = (app.checkpointData as { loginHost?: string } | null)?.loginHost;
+  const needsLogin = canRetry && !!loginHost && ["blocked_login_required", "blocked_login_failed"].includes(app.checkpoint ?? "");
 
   return (
     <>
@@ -102,7 +104,28 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
         </div>
       )}
 
-      {canRetry && (
+      {needsLogin && (
+        <div className="mb-6">
+          <Card
+            title={app.checkpoint === "blocked_login_failed" ? `Update your login for ${loginHost}` : `Save your login for ${loginHost}`}
+            description={`1) Open ${loginHost} and create your candidate account there (once). 2) Enter the same email and password here. CareerFlow uses it only on ${loginHost}, signs in, fills the form, and still asks you before Submit.`}
+          >
+            <ActionForm action={saveLoginAction} className="grid gap-3 sm:grid-cols-2">
+              <input type="hidden" name="applicationId" value={app.id} />
+              <input type="hidden" name="url" value={`https://${loginHost}`} />
+              <input type="hidden" name="label" value={job.companyName} />
+              <Field label="Email or username" name="username" autoComplete="off" required />
+              <Field label="Password" name="password" type="password" autoComplete="new-password" required />
+              <div className="sm:col-span-2 flex flex-wrap items-center gap-3">
+                <SubmitButton pendingText="Saving…">Save login & continue</SubmitButton>
+                <a className="text-sm text-brand-600 hover:underline" href={applyUrl} target="_blank" rel="noopener">Open {loginHost} to create the account ↗</a>
+              </div>
+            </ActionForm>
+          </Card>
+        </div>
+      )}
+
+      {canRetry && !needsLogin && (
         <div className="mb-6">
           <Card title="Have the employer's own application link?" description={`Search “${job.title} ${job.companyName} careers”, open the job on ${job.companyName}'s own site, and paste the link of the page with the Apply form. CareerFlow continues from there.`}>
             <ActionForm action={useApplyLinkAction} className="flex flex-wrap items-end gap-3">
