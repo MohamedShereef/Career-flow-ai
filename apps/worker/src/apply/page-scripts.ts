@@ -390,3 +390,32 @@ export const SAFE_TARGET = String.raw`(([key, selector, popupId]) => {
   const popup = popupId ? document.getElementById(popupId) : null;
   return box.contains(t) || (popup && popup.contains(t)) || !!t.closest("[role=listbox]");
 })`;
+
+/**
+ * Installed in every page and frame before any site code runs: a form can only be submitted
+ * right after CareerFlow deliberately clicks something (sign in, Apply, Next, the final Submit).
+ * Implicit submissions — Enter in a text field, a site script calling form.submit() on its own —
+ * are blocked while an application is being prepared.
+ */
+export const SUBMIT_GUARD = String.raw`(() => {
+  if (window.__cfGuard) return;
+  window.__cfGuard = true;
+  const allowed = () => (window.__cfAllowUntil || 0) > Date.now();
+  const blocked = () => { window.__cfBlocked = (window.__cfBlocked || 0) + 1; };
+  document.addEventListener("submit", (e) => { if (!allowed()) { e.preventDefault(); e.stopImmediatePropagation(); blocked(); } }, true);
+  const ps = HTMLFormElement.prototype.submit;
+  HTMLFormElement.prototype.submit = function () { if (allowed()) return ps.call(this); blocked(); };
+  const rs = HTMLFormElement.prototype.requestSubmit;
+  if (rs) HTMLFormElement.prototype.requestSubmit = function (...a) { if (allowed()) return rs.apply(this, a); blocked(); };
+})()`;
+
+/** Is it safe to press Enter now? Only outside text fields, or when this field's option list is open. */
+export const ENTER_SAFE = String.raw`(() => {
+  const el = document.activeElement;
+  if (!el || !(el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return true;
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const owns = (el.getAttribute("aria-owns") || el.getAttribute("aria-controls") || "").split(/\s+/)[0];
+  const popup = owns && document.getElementById(owns);
+  if (popup && [...popup.querySelectorAll("[role=option]")].some(vis)) return true;
+  return el.getAttribute("aria-expanded") === "true" && [...document.querySelectorAll("[role=option]")].some(vis);
+})()`;

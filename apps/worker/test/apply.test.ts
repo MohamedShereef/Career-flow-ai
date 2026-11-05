@@ -26,6 +26,7 @@ let base = "";
 const received: Array<Record<string, string>> = [];
 const portalSubmissions: Array<Record<string, string>> = [];
 const trickySubmissions: Array<Record<string, string>> = [];
+let implicitPosts = 0;
 
 const FORM = (extra = "") => `<!doctype html><html><head><title>Senior Procurement Engineer – Acme Giga</title></head><body>
 <h1>Senior Procurement Engineer</h1>
@@ -54,6 +55,28 @@ beforeAll(async () => {
     if (req.url === "/jobs/1/apply") {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(FORM());
+    }
+    if (req.url === "/implicit") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><html><body><form method="post" action="/implicit/submit">
+        <label for="fn">First Name</label><input id="fn" name="first_name">
+        <label for="em">Email</label><input id="em" name="email" type="email">
+        <label for="cv">Resume</label><input id="cv" name="resume" type="file">
+        <input id="nat" name="nationality" role="combobox" aria-label="Nationality" aria-required="true" aria-owns="nat-list" aria-expanded="true" value="No Selection">
+        <ul id="nat-list" role="listbox"></ul>
+        <button type="submit">Submit Application</button></form>
+        <script>
+          const nat = document.getElementById("nat");
+          nat.addEventListener("keydown", (e) => { if (e.key === "Enter") { window.__enterSeen = true; document.forms[0].submit(); } });
+          nat.addEventListener("keyup", () => { document.getElementById("nat-list").innerHTML = '<li role="option">Other</li>'; });
+          nat.addEventListener("blur", () => setTimeout(() => { nat.value = "No Selection"; }, 100)); // nothing chosen from a list
+        </script>
+        </body></html>`);
+    }
+    if (req.url === "/implicit/submit") {
+      implicitPosts++;
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end("<html><body>Thank you for applying</body></html>");
     }
     if (req.url === "/tricky") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -306,5 +329,22 @@ run("auto-apply in a real browser", () => {
     expect(JSON.stringify(learned[0]!.steps)).not.toContain("Senior"); // methods never store anyone's answers
     const typed = await db.select().from(fieldRecipes).where(eq(fieldRecipes.strategy, "focus_type_enter"));
     expect(typed[0]!.successes).toBeGreaterThanOrEqual(2);
+  }, 120_000);
+
+  it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {
+    const db = testDb();
+    const { user, job } = await setup("/implicit");
+    await answers.saveAnswer(db, user.id, { questionText: "Nationality", answer: "Egyptian", scope: "global" });
+    ai.setAiTransportForTests(async (req) => {
+      if (req.schemaName === "field_rescue") {
+        const step = (o: Record<string, unknown>) => ({ action: null, key: null, selector: null, chars: null, ms: null, ...o });
+        return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ steps: [step({ action: "click_field" }), step({ action: "type_value" }), step({ action: "press", key: "Enter" })], reason: "type and confirm" }) };
+      }
+      return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: [] }) };
+    });
+    const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { blocked?: string };
+    expect(r.blocked).toBe("fill_failed"); // the field can't be set — so it stops and tells you
+    expect(implicitPosts).toBe(0); // and nothing was ever sent to the employer
   }, 120_000);
 });

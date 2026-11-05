@@ -74,7 +74,7 @@ rel.addEventListener("keydown", (e) => {
     const o = [...relPop.children].find((x) => x.textContent.toLowerCase().startsWith(typed.toLowerCase()));
     if (o) { rel.textContent = o.textContent; relNative.value = [...relNative.options].find((x) => x.text === o.textContent).value; }
     typed = ""; relPop.classList.add("hidden");
-  } else if (e.key.length === 1) typed += e.key;
+  } else if (e.key.length === 1) { typed += e.key; clearTimeout(rel._t); rel._t = setTimeout(() => (typed = ""), 1000); }
 });
 list.querySelectorAll("[role=option]").forEach(o => o.addEventListener("click", () => { ic.value = o.textContent; list.classList.add("hidden"); }));
 </script></body></html>`;

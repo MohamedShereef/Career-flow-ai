@@ -9,7 +9,7 @@ import { chromium, type Browser, type BrowserContext, type Frame, type Page } fr
 import type { autoapply, fieldMemory } from "@careerflow/core";
 import { createHash } from "node:crypto";
 type RescueStep = fieldMemory.RescueStep;
-import { BOT_CHECK, CHOOSE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
+import { BOT_CHECK, CHOOSE, ENTER_SAFE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, SUBMIT_GUARD, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -32,9 +32,22 @@ export async function openSession(): Promise<Session> {
   });
   const context = await browser.newContext({ userAgent: UA, locale: "en-US", timezoneId: "Asia/Riyadh", viewport: { width: 1280, height: 900 } });
   context.setDefaultTimeout(15_000);
+  await context.addInitScript(SUBMIT_GUARD);
   const page = await context.newPage();
   const dir = await mkdtemp(join(tmpdir(), "cf-apply-"));
   return { browser, context, page, dir };
+}
+
+/** Let the next deliberate click submit a form in this frame (sign in, Apply, Next, final Submit). */
+async function allowSubmit(scope: Frame | Page, ms = 6000) {
+  await scope.evaluate(`window.__cfAllowUntil = Date.now() + ${ms}`).catch(() => undefined);
+}
+
+/** Press Enter only where it can't submit a form by accident. */
+async function safeEnter(form: Frame, page: Page) {
+  const ok = (await form.evaluate(ENTER_SAFE).catch(() => false)) as boolean;
+  if (ok) await page.keyboard.press("Enter");
+  return ok;
 }
 
 export async function closeSession(s: Session) {
@@ -105,6 +118,7 @@ export async function signIn(page: Page, cred: Credentials): Promise<{ outcome: 
     }
     if (info.hasUser) await page.locator('[data-cf-login="user"]').first().fill(cred.username);
     await page.locator('[data-cf-login="pass"]').first().fill(cred.password);
+    await allowSubmit(page);
     if (info.hasSubmit) await page.locator('[data-cf-login="submit"]').first().click({ timeout: 8000 });
     else await page.locator('[data-cf-login="pass"]').first().press("Enter");
     for (let i = 0; i < 8; i++) {
@@ -190,6 +204,7 @@ export async function openForm(s: Session, url: string, atsKind: string, opts: {
     const n = (await page.evaluate(FIND_APPLY)) as number;
     if (!n) break;
     const target = page.locator('[data-cf-apply="0"]');
+    await allowSubmit(page);
     const popup = s.context.waitForEvent("page", { timeout: 2500 }).catch(() => null);
     await target.click({ timeout: 5000 }).catch(() => undefined);
     const newPage = await popup;
@@ -231,6 +246,7 @@ export async function navState(form: Frame) {
 export async function goNext(form: Frame, page: Page): Promise<{ ok: boolean; errors: string[]; submitted?: { url: string; summary: string; screenshot: Buffer | null } }> {
   const before = (await form.evaluate(EXTRACT)) as RawSnapshot;
   const sig = (r: RawSnapshot) => r.fields.map((f) => f.key).join("|");
+  await allowSubmit(form);
   await form.locator("[data-cf-next]").first().click({ timeout: 10_000 });
   for (let i = 0; i < 15; i++) {
     await sleep(1000);
@@ -311,10 +327,10 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
   set_select: async ({ form, a }) => {
     if (!(await form.evaluate(`${SET_SELECT}(${JSON.stringify([a.key, valueOf(a)])})`))) throw new Error(`option "${valueOf(a)}" not in the list`);
   },
-  select_keyboard: async ({ loc, page, a }) => {
+  select_keyboard: async ({ form, loc, page, a }) => {
     await loc.first().focus();
     await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
-    await page.keyboard.press("Enter").catch(() => undefined);
+    await safeEnter(form, page).catch(() => undefined);
     await page.keyboard.press("Tab").catch(() => undefined);
   },
   dom_choose: async ({ form, a }) => {
@@ -348,11 +364,14 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
     }
   },
   // Widgets that ignore clicks on options but accept type-ahead on the focused field.
-  focus_type_enter: async ({ loc, page, a }) => {
+  focus_type_enter: async ({ form, loc, page, a }) => {
+    // For type-ahead widgets that aren't text fields (a text field gets type_pick instead).
+    if (await loc.first().evaluate((e) => e.tagName === "INPUT" || e.tagName === "TEXTAREA")) throw new Error("text field: use type_pick");
     await page.keyboard.press("Escape").catch(() => undefined);
+    await sleep(1200); // let any type-ahead from an earlier attempt expire
     await loc.first().focus();
     await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
-    await page.keyboard.press("Enter");
+    if (!(await safeEnter(form, page))) throw new Error("Enter not safe here");
   },
   // Searchable lists that load options from the server on real key presses (e.g. SuccessFactors picklists).
   type_pick: async ({ form, page, loc, a, popup }) => {
@@ -371,7 +390,7 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
     }
     throw new Error(`"${valueOf(a)}" didn't appear in the list`);
   },
-  arrow_enter: async ({ loc, page, a }) => {
+  arrow_enter: async ({ form, loc, page, a }) => {
     const el = loc.first();
     await el.click(T).catch(() => el.click({ force: true, ...T }));
     if (await el.isEditable().catch(() => false)) {
@@ -383,7 +402,7 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
     }
     await page.keyboard.press("ArrowDown");
     await sleep(200);
-    await page.keyboard.press("Enter");
+    if (!(await safeEnter(form, page))) throw new Error("no open list to confirm");
   },
   native_nearby: async ({ form, a }) => {
     if (!(await form.evaluate(`${SET_NEARBY_SELECT}(${JSON.stringify([a.key, valueOf(a)])})`))) throw new Error("no native list next to the widget");
@@ -405,7 +424,7 @@ const DEFAULT_ORDER: Record<Group, string[]> = {
   file: ["set_files"],
   select: ["select_option", "set_select", "select_keyboard"],
   choice: ["dom_choose", "force_check"],
-  list: ["click_option", "focus_type_enter", "type_pick", "arrow_enter", "native_nearby"],
+  list: ["click_option", "type_pick", "focus_type_enter", "arrow_enter", "native_nearby"],
   text: ["fill", "type_keys"],
 };
 
@@ -431,7 +450,9 @@ async function runSteps(c: Ctx, steps: RescueStep[]) {
         break;
       }
       case "press":
-        await c.page.keyboard.press(st.key);
+        if (st.key === "Enter") {
+          if (!(await safeEnter(c.form, c.page))) throw new Error("Enter refused: no open list (could submit the form)");
+        } else await c.page.keyboard.press(st.key);
         break;
       case "wait":
         await sleep(st.ms);
@@ -483,6 +504,11 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       lastError = (err as Error).message.split("\n")[0]!.slice(0, 120);
     }
     await sleep(300);
+    // Picklists only commit (or reset) when you leave the field, so judge them after leaving it.
+    if (group === "list") {
+      await form.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()").catch(() => undefined);
+      await sleep(400);
+    }
     if (await keeps(form, a)) {
       await memory?.record(sig, group, p.strategy, true, p.steps).catch(() => undefined);
       return;
@@ -501,6 +527,7 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       } catch (err) {
         lastError = `AI rescue: ${(err as Error).message.slice(0, 100)}`;
       }
+      await form.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()").catch(() => undefined);
       await sleep(400);
       const ok = await keeps(form, a);
       const name = `ai:${createHash("sha1").update(JSON.stringify(steps)).digest("hex").slice(0, 10)}`;
@@ -602,6 +629,7 @@ export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
   const before = page.url();
   // Some forms already say "thank you for your interest" above the form; only a change counts.
   const pre = (await form.evaluate(OUTCOME).catch(() => null)) as { confirmed: boolean } | null;
+  await allowSubmit(form, 15_000);
   await form.locator("[data-cf-submit]").first().click({ timeout: 10_000 });
 
   type Outcome = { confirmed: boolean; confirmation: string; errors: string[]; challenge: boolean; submitStill: boolean; invalid?: Array<{ key: string | null; label: string; message: string }> };
