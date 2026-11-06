@@ -863,7 +863,40 @@ export async function getDetail(db: Db, userId: string, applicationId: string) {
     db.select().from(submissionEvidence).where(eq(submissionEvidence.applicationId, applicationId)).orderBy(desc(submissionEvidence.capturedAt)),
     db.select().from(pendingQuestions).where(and(eq(pendingQuestions.applicationId, applicationId), eq(pendingQuestions.status, "open"))),
   ]);
-  return { app: row.a, job: row.j, preview: preview ? { ...preview, data: readPreview(preview) } : null, events, evidence, questions };
+  const [lastError] = row.a.lastErrorId ? await db.select().from(errorRecords).where(eq(errorRecords.id, row.a.lastErrorId)) : [];
+  return { app: row.a, job: row.j, preview: preview ? { ...preview, data: readPreview(preview) } : null, events, evidence, questions, technical: lastError ? technicalReport(row.a, row.j, lastError) : null };
+}
+
+/**
+ * What a developer needs to fix a stuck field, as plain text the user can copy: for each field the
+ * label, wanted value, element, what the page showed, the methods tried and the field's HTML.
+ * Answers the user typed for sensitive fields are already excluded from the debug data.
+ */
+function technicalReport(app: typeof applications.$inferSelect, job: typeof jobs.$inferSelect, err: typeof errorRecords.$inferSelect) {
+  const t = (err.technicalDetail ?? {}) as { detail?: string; debug?: Array<{ label?: string; wanted?: string; debug?: Record<string, unknown> }>; invalid?: unknown; errors?: unknown; url?: string };
+  const lines = [
+    `CareerFlow technical details — ${new Date(err.createdAt).toISOString()}`,
+    `Job: ${job.title} · ${job.companyName}`,
+    `Link used: ${applyUrlFor(app, job)}`,
+    `Stage: ${err.stage} · ${err.category}`,
+    t.detail ? `Detail: ${t.detail}` : "",
+    t.errors ? `Site errors: ${JSON.stringify(t.errors)}` : "",
+    t.invalid ? `Invalid fields: ${JSON.stringify(t.invalid)}` : "",
+  ].filter(Boolean);
+  for (const f of t.debug ?? []) {
+    const d = f.debug ?? {};
+    lines.push(
+      "",
+      `── ${f.label ?? "?"} ──`,
+      `wanted: ${f.wanted ?? ""}`,
+      `element: ${d.tag ?? "?"} type=${d.type ?? ""} role=${d.role ?? ""} visible=${d.visible ?? ""} count=${d.count ?? ""}`,
+      `page shows: ${JSON.stringify(d.value ?? null)}`,
+      d.options ? `options: ${JSON.stringify(d.options).slice(0, 600)}` : "",
+      `tried: ${JSON.stringify(d.attempts ?? [])}`,
+      `html: ${String(d.html ?? "").slice(0, 1500)}`,
+    );
+  }
+  return lines.filter((l) => l !== "").join("\n");
 }
 
 export async function awaitingApprovalCount(db: Executor, userId: string) {

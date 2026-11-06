@@ -4,6 +4,7 @@ import { AppError, autoapply } from "@careerflow/core";
 import { approveApplicationAction, cancelApplicationAction, resolveUncertainAction, retryApplicationAction, saveLoginAction, useApplyLinkAction } from "@/actions/applications";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { ApplicationControls } from "@/components/application-controls";
+import { CopyText } from "@/components/copy-text";
 import { Badge, Card, Field, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -189,6 +190,11 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
                   </li>
                 ))}
               </ul>
+            </Card>
+          )}
+          {d.technical && app.status !== "submitted_unverified" && (
+            <Card title="Technical details" description="If CareerFlow got stuck, copy this and send it for a fix. It shows how each stuck field looks on the employer's page — no passwords.">
+              <CopyText text={d.technical} />
             </Card>
           )}
           <Card title="History">

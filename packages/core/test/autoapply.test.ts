@@ -265,3 +265,19 @@ describe("form rejections never loop", () => {
     expect((await state()).status).toBe("needs_user_action"); // 3 automatic tries used → waits for Retry
   });
 });
+
+describe("technical details for support", () => {
+  it("turns the stored field debug into copyable text on the application", async () => {
+    const { applications, jobs } = await import("@careerflow/db");
+    const { user } = await makeUser();
+    const db = testDb();
+    const [job] = await db.insert(jobs).values({ externalId: crypto.randomUUID(), dedupeKey: crypto.randomUUID(), title: "Buyer", companyName: "Acme", employerKey: "acme", sourceUrl: "https://x", applyUrl: "https://apply.example.com/j/1" }).returning();
+    const [app] = await db.insert(applications).values({ userId: user.id, jobId: job!.id, employerKey: "acme", status: "processing" }).returning();
+    await autoapply.recordBlocker(db, app!.id, { kind: "fill_failed", detail: "Address: the page didn't keep the value", debug: [{ label: "Address", wanted: "Riyadh, Saudi Arabia", debug: { tag: "input", role: "combobox", value: "R", attempts: [{ method: "fill" }], html: "<div><input id='address'></div>" } }] } as autoapply.Blocker);
+    const d = await autoapply.getDetail(db, user.id, app!.id);
+    expect(d.technical).toContain("── Address ──");
+    expect(d.technical).toContain("role=combobox");
+    expect(d.technical).toContain("<input id='address'>");
+    expect(d.technical).toContain("https://apply.example.com/j/1");
+  });
+});
