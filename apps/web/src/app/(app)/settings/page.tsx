@@ -275,7 +275,7 @@ async function Sources() {
   return (
     <div className="grid gap-6 lg:grid-cols-5">
       <div className="lg:col-span-3">
-        <Card title="Job boards the agent watches" description="Official employer career sites, checked every 6 hours. Only procurement-family roles are kept.">
+        <Card title="Job sources the agent watches" description="Employer career sites (official) plus internet-wide search. Every employer site CareerFlow finds for one of your matches is added here automatically, so that employer's next jobs come straight from the source. Checked every 6 hours; only procurement-family roles are kept.">
           {rows.length === 0 ? (
             <EmptyState title="No sources yet">They're added automatically when the worker starts.</EmptyState>
           ) : (
@@ -284,7 +284,7 @@ async function Sources() {
                 <li key={s.id} className="py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="font-medium">{s.name} <span className="text-xs font-normal text-muted">· {SOURCE_HELP[s.kind]?.label ?? s.kind}</span></div>
+                      <div className="font-medium">{s.name} <span className="text-xs font-normal text-muted">· {SOURCE_HELP[s.kind]?.label ?? s.kind}</span>{(s.config as { autoAdded?: boolean } | null)?.autoAdded && <span className="ml-2 text-xs font-normal text-good">Added automatically from one of your matches</span>}</div>
                       <div className="truncate text-xs text-muted">{s.identifier}</div>
                       <div className="mt-1 text-xs text-muted">{activeJobs} open procurement roles · last success {fmtDate(s.lastSuccessAt)}</div>
                       {s.lastError && <div className="mt-1 text-xs text-bad">Last error: {s.lastError}</div>}

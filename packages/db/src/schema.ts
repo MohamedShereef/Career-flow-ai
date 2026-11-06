@@ -71,6 +71,7 @@ export const sourceKind = pgEnum("source_kind", [
   "ashby",
   "workable",
   "smartrecruiters",
+  "oracle",
   "career_site",
   "feed",
   "linkedin_assisted",

@@ -4,6 +4,7 @@ import { tailorAction } from "@/actions/cv";
 import { reindexAction, runDiscoveryAction } from "@/actions/jobs";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { NotInterested } from "@/components/not-interested";
+import { LinkBadge, employerSiteChecked } from "@/components/link-badge";
 import { Badge, Card, EmptyState, Field, PageHeader, TextArea, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -107,7 +108,7 @@ export default async function Jobs({ searchParams }: { searchParams: Promise<{ t
               </div>
               <p className="mt-2 line-clamp-2 text-sm text-slate-700">{e.summary}</p>
               {e.rejectionReasons.length > 0 && <p className="mt-1 text-xs text-bad">{e.rejectionReasons.join(" · ")}</p>}
-              <div className="mt-2 text-xs text-muted">First seen {fmtDate(j.firstSeenAt)}{j.postedAt ? ` · posted ${fmtDate(j.postedAt)}` : ""}</div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted"><LinkBadge url={j.applyUrl} company={j.companyName} raw={j.raw} checked={employerSiteChecked(j.raw)} /><span>First seen {fmtDate(j.firstSeenAt)}{j.postedAt ? ` · posted ${fmtDate(j.postedAt)}` : ""}</span></div>
             </Link>
             {e.decision !== "rejected" && <div className="mt-2"><NotInterested jobId={j.id} compact /></div>}
             </div>

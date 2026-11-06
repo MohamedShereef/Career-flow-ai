@@ -6,42 +6,12 @@
  * 1. Other links Google already returned for this job (free).
  * 2. One web search via SerpApi (cached on the job for 7 days).
  */
-import { eq } from "drizzle-orm";
-import { jobs } from "@careerflow/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { jobEvaluations, jobSources, jobs } from "@careerflow/db";
 import type { Db } from "../types";
-import { isJobBoardUrl } from "./autoapply";
-
-const ATS_HOSTS = /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|myworkdayjobs\.com|myworkdaysite\.com|successfactors\.(com|eu)|sapsf\.(com|eu)|jobs2web\.com|taleo\.net|oraclecloud\.com|icims\.com|bamboohr\.com|recruitee\.com|teamtailor\.com|jobvite\.com|breezy\.hr|zohorecruit\.[a-z.]+|personio\.(de|com)|pinpointhq\.com|rippling\.com|eightfold\.ai|phenompeople\.com)$/i;
-
-const STOP = new Set(["the", "and", "for", "of", "in", "at", "a", "an", "to", "with", "ksa", "saudi", "arabia", "riyadh", "jeddah", "dammam", "uae", "dubai", "llc", "ltd", "company", "co", "group", "limited", "jobs", "job"]);
-const words = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").split(" ").filter((w) => w.length > 2 && !STOP.has(w));
-
-function hostOf(u: string) {
-  try {
-    return new URL(u).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-/** Is this link plausibly the employer's own posting for this job? */
-export function looksLikeEmployerPosting(url: string, title: string, company: string, pageTitle = "") {
-  if (!url || isJobBoardUrl(url)) return false;
-  const host = hostOf(url);
-  if (!host) return false;
-  const co = words(company).filter((w) => w.length >= 4);
-  const hay = `${host} ${url.toLowerCase()}`;
-  const inLink = co.some((w) => hay.includes(w)) || (co.length > 1 && hay.includes(co.join("")));
-  const inTitle = co.some((w) => pageTitle.toLowerCase().includes(w));
-  const onAts = ATS_HOSTS.test(host);
-  // Company's own domain must name the company; a shared ATS may use a short tenant name, so the result title can confirm it.
-  if (!(inLink || (onAts && inTitle))) return false;
-  if (!pageTitle) return true;
-  const want = words(title);
-  const got = new Set(words(pageTitle));
-  const overlap = want.filter((w) => got.has(w)).length / Math.max(1, want.length);
-  return overlap >= (onAts ? 0.5 : 0.6);
-}
+import { atsFromUrl, careerSourceFromUrl, jobOnEmployerSite, looksLikeEmployerPosting } from "../job-links";
+import { audit } from "./audit";
+export { looksLikeEmployerPosting } from "../job-links";
 
 type SearchFn = (q: string) => Promise<Array<{ link: string; title: string }>>;
 
@@ -77,3 +47,78 @@ export async function findEmployerLink(db: Db, job: typeof jobs.$inferSelect, op
   return url ? { url, via: "search" } : null;
 }
 
+
+/**
+ * Watch the employer's own careers site from now on, so its next jobs come straight
+ * from the source. Returns the new source, or null when it's already watched or the
+ * site isn't one CareerFlow can read directly.
+ */
+export async function adoptCareerSource(db: Db, url: string, companyName: string) {
+  const cs = careerSourceFromUrl(url);
+  if (!cs) return null;
+  const [row] = await db
+    .insert(jobSources)
+    .values({ kind: cs.kind, name: companyName.slice(0, 120), identifier: cs.identifier, config: { autoAdded: true, foundFrom: url.slice(0, 500) } })
+    .onConflictDoNothing()
+    .returning();
+  if (row) await audit(db, { userId: null, actor: "agent", action: "source.auto_added", entityType: "job_source", entityId: row.id, metadata: { kind: cs.kind, company: companyName } });
+  return row ?? null;
+}
+
+export type SiteResult = { jobId: string; status: "already_employer" | "found" | "not_found"; url?: string; newSourceId?: string };
+
+/**
+ * Make a job point at the employer's own posting. Jobs already there only teach us the
+ * employer's careers site; the others get one cached search.
+ */
+export async function resolveEmployerSite(db: Db, jobId: string, opts: { search?: SearchFn } = {}): Promise<SiteResult> {
+  const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));
+  if (!job) return { jobId, status: "not_found" };
+  if (jobOnEmployerSite(job)) {
+    const src = await adoptCareerSource(db, job.applyUrl, job.companyName);
+    return { jobId, status: "already_employer", url: job.applyUrl, newSourceId: src?.id };
+  }
+  const found = await findEmployerLink(db, job, opts);
+  if (!found) return { jobId, status: "not_found" };
+  const raw = ((await db.select({ raw: jobs.raw }).from(jobs).where(eq(jobs.id, jobId)))[0]?.raw ?? {}) as Record<string, unknown>;
+  await db
+    .update(jobs)
+    .set({ applyUrl: found.url, atsKind: atsFromUrl(found.url), raw: { ...raw, boardUrl: job.applyUrl, official: true } })
+    .where(eq(jobs.id, jobId));
+  const src = await adoptCareerSource(db, found.url, job.companyName);
+  return { jobId, status: "found", url: found.url, newSourceId: src?.id };
+}
+
+/** Jobs recommended to this user that still point at a job board and weren't searched this week. */
+export async function jobsNeedingEmployerSite(db: Db, userId: string, limit = 10) {
+  const rows = await db
+    .select({ id: jobs.id, applyUrl: jobs.applyUrl, companyName: jobs.companyName, raw: jobs.raw })
+    .from(jobEvaluations)
+    .innerJoin(jobs, eq(jobs.id, jobEvaluations.jobId))
+    .where(and(eq(jobEvaluations.userId, userId), isNull(jobEvaluations.supersededAt), eq(jobEvaluations.decision, "recommended"), eq(jobs.status, "active")))
+    .orderBy(sql`${jobEvaluations.score} desc`)
+    .limit(200);
+  const fresh = (raw: unknown) => {
+    const at = (raw as { employerLink?: { at?: string } } | null)?.employerLink?.at;
+    return !!at && Date.now() - Date.parse(at) < 7 * 86_400_000;
+  };
+  return rows.filter((r) => !jobOnEmployerSite(r) && !fresh(r.raw)).slice(0, limit).map((r) => r.id);
+}
+
+/** Recommended jobs whose employer careers site isn't watched yet (free: no search needed). */
+export async function jobsOnUnwatchedEmployerSites(db: Db, userId: string, limit = 25) {
+  const rows = await db
+    .select({ id: jobs.id, applyUrl: jobs.applyUrl, company: jobs.companyName })
+    .from(jobEvaluations)
+    .innerJoin(jobs, eq(jobs.id, jobEvaluations.jobId))
+    .where(and(eq(jobEvaluations.userId, userId), isNull(jobEvaluations.supersededAt), eq(jobEvaluations.decision, "recommended"), eq(jobs.status, "active")))
+    .limit(300);
+  const watched = new Set((await db.select({ kind: jobSources.kind, id: jobSources.identifier }).from(jobSources)).map((r) => `${r.kind}|${r.id.toLowerCase()}`));
+  return rows
+    .filter((r) => {
+      const cs = careerSourceFromUrl(r.applyUrl);
+      return cs && !watched.has(`${cs.kind}|${cs.identifier.toLowerCase()}`);
+    })
+    .slice(0, limit)
+    .map((r) => r.id);
+}

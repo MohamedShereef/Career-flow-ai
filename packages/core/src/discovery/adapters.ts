@@ -4,6 +4,7 @@
  * normalized postings. No logins, no scraping of sites that forbid it.
  */
 import { guessCountry, htmlToText, toDate } from "./text";
+import { pickApplyLink } from "../job-links";
 import type { Adapter, FetchContext, NormalizedJob, SourceConfig } from "./types";
 
 const UA = "CareerFlowAI/1.0 (+job discovery for a single job seeker)";
@@ -298,6 +299,59 @@ export async function successfactorsDetail(_src: SourceConfig, job: NormalizedJo
   const text = htmlToText(block ?? html.replace(/[\s\S]*<body[^>]*>/i, ""));
   return { ...job, description: text ? text.slice(0, 20_000) : null };
 }
+// ── Oracle Recruiting Cloud (Candidate Experience), used by many Saudi giga-projects ──
+// identifier = candidate site URL, e.g. https://xxxx.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
+type OrReq = { Id: string; Title: string; PostedDate?: string; PrimaryLocation?: string; PrimaryLocationCountry?: string; ShortDescriptionStr?: string; WorkplaceType?: string; JobSchedule?: string };
+export function parseOracleSite(identifier: string) {
+  const u = new URL(identifier);
+  const site = u.pathname.match(/\/sites\/([^/]+)/)?.[1];
+  if (!site) throw new Error("Paste the Oracle careers page address, ending in /sites/<site>");
+  return { origin: u.origin, site, lang: u.pathname.match(/CandidateExperience\/([a-z]{2}(?:-[A-Z]{2})?)\//)?.[1] ?? "en" };
+}
+export const oracle: Adapter = async (src, ctx) => {
+  const { origin, site, lang } = parseOracleSite(src.identifier);
+  const queries = ctx.queries.length ? ctx.queries : ["procurement"];
+  const seen = new Map<string, NormalizedJob>();
+  for (const q of queries.slice(0, 6)) {
+    for (let offset = 0; offset < Math.min(ctx.limit, 100); offset += 25) {
+      const finder = `findReqs;siteNumber=${site},limit=25,offset=${offset},keyword="${q.replace(/"/g, "")}",sortBy=POSTING_DATES_DESC`;
+      const data = await getJson<{ items?: Array<{ requisitionList?: OrReq[]; TotalJobsCount?: number }> }>(ctx, `${origin}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=${encodeURIComponent(finder)}`);
+      const list = data.items?.[0]?.requisitionList ?? [];
+      for (const r of list) {
+        if (seen.has(r.Id)) continue;
+        const url = `${origin}/hcmUI/CandidateExperience/${lang}/sites/${site}/job/${r.Id}`;
+        seen.set(r.Id, {
+          externalId: String(r.Id),
+          title: r.Title,
+          companyName: src.name,
+          location: s(r.PrimaryLocation),
+          country: s(r.PrimaryLocationCountry) === "SA" ? "Saudi Arabia" : guessCountry(r.PrimaryLocation),
+          remoteType: s(r.WorkplaceType),
+          employmentType: s(r.JobSchedule),
+          description: null,
+          postedAt: toDate(r.PostedDate),
+          sourceUrl: url,
+          applyUrl: url,
+          atsKind: "oracle",
+        });
+      }
+      if (list.length < 25) break;
+    }
+  }
+  return [...seen.values()].slice(0, ctx.limit);
+};
+export async function oracleDetail(src: SourceConfig, job: NormalizedJob, ctx: FetchContext): Promise<NormalizedJob> {
+  const { origin, site } = parseOracleSite(src.identifier);
+  const finder = `ById;Id="${job.externalId}",siteNumber=${site}`;
+  const d = await getJson<{ items?: Array<{ ExternalDescriptionStr?: string; ExternalResponsibilitiesStr?: string; ExternalQualificationsStr?: string }> }>(ctx, `${origin}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails?expand=all&onlyData=true&finder=${encodeURIComponent(finder)}`);
+  const it = d.items?.[0];
+  const text = htmlToText([it?.ExternalDescriptionStr, it?.ExternalResponsibilitiesStr, it?.ExternalQualificationsStr].filter(Boolean).join("\n"));
+  return { ...job, description: text ? text.slice(0, 20_000) : null };
+}
+ADAPTERS.oracle = oracle;
+DETAIL.oracle = oracleDetail;
+SOURCE_HELP.oracle = { label: "Oracle careers site (Candidate Experience)", identifier: "Careers page address", example: "https://xxxx.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX" };
+
 ADAPTERS.successfactors = successfactors;
 DETAIL.successfactors = successfactorsDetail;
 SOURCE_HELP.successfactors = { label: "SAP SuccessFactors careers site", identifier: "Careers site address", example: "https://neom.jobs2web.com" };
@@ -306,14 +360,8 @@ SOURCE_HELP.successfactors = { label: "SAP SuccessFactors careers site", identif
 //    Naukrigulf and employers' own sites). Licensed API access; no scraping of those boards. ──
 // identifier = location to search, e.g. "Saudi Arabia". Needs SERPAPI_KEY or JSEARCH_API_KEY.
 
-const AGGREGATOR_HOSTS = /linkedin\.|bayt\.|indeed\.|gulftalent\.|naukrigulf\.|glassdoor\.|monstergulf|foundit|jooble|careerjet|talent\.com|jobrapido|laimoon|tanqeeb|drjobs|qureos|ziprecruiter|wuzzuf|sabbar|jobleads/i;
 
 /** Prefer the employer's own application page over job-board copies. */
-function bestApplyLink(options: Array<{ link?: string; apply_link?: string; is_direct?: boolean }>, fallback: string) {
-  const links = options.map((o) => ({ url: o.link ?? o.apply_link ?? "", direct: !!o.is_direct })).filter((o) => o.url);
-  return links.find((l) => l.direct)?.url ?? links.find((l) => !AGGREGATOR_HOSTS.test(l.url))?.url ?? links[0]?.url ?? fallback;
-}
-
 const queriesFor = (src: SourceConfig, ctx: FetchContext) => (ctx.queries.length ? ctx.queries : ["procurement"]).slice(0, Number(src.config.maxQueries ?? 4));
 
 type SerpJob = { job_id?: string; title: string; company_name: string; location?: string; via?: string; description?: string; share_link?: string; detected_extensions?: { posted_at?: string; schedule_type?: string; work_from_home?: boolean }; apply_options?: Array<{ title?: string; link?: string }> };
@@ -328,7 +376,9 @@ export const googleJobs: Adapter = async (src, ctx) => {
     for (const j of data.jobs_results ?? []) {
       const id = j.job_id ?? `${j.company_name}|${j.title}|${j.location}`;
       if (out.has(id)) continue;
-      const apply = bestApplyLink(j.apply_options ?? [], j.share_link ?? "");
+      // Keep the employer's own posting when Google lists it; job boards only as a last resort.
+      const pick = pickApplyLink((j.apply_options ?? []).map((o) => ({ url: o.link ?? "" })), j.title, j.company_name, j.share_link ?? "");
+      const apply = pick.url;
       out.set(id, {
         externalId: sha1ish(id),
         title: j.title,
@@ -343,7 +393,7 @@ export const googleJobs: Adapter = async (src, ctx) => {
         applyUrl: apply,
         atsKind: `google_jobs${j.via ? `:${j.via.replace(/^via\s+/i, "")}` : ""}`.slice(0, 60),
         // Every place Google found this job: used later to find the employer's own page.
-        raw: { applyOptions: (j.apply_options ?? []).map((o) => o.link).filter(Boolean).slice(0, 10) },
+        raw: { applyOptions: (j.apply_options ?? []).map((o) => o.link).filter(Boolean).slice(0, 10), employerSite: pick.employerSite },
       });
     }
   }
@@ -363,7 +413,8 @@ export const jsearch: Adapter = async (src, ctx) => {
     for (const j of data.data ?? []) {
       if (out.has(j.job_id)) continue;
       const loc = s(j.job_location) ?? s([j.job_city, j.job_state, j.job_country].filter(Boolean).join(", "));
-      const apply = bestApplyLink(j.apply_options ?? [], j.job_apply_link ?? j.job_google_link ?? "");
+      const pick = pickApplyLink((j.apply_options ?? []).map((o) => ({ url: o.apply_link ?? "", direct: !!o.is_direct })), j.job_title, j.employer_name, j.job_apply_link ?? j.job_google_link ?? "");
+      const apply = pick.url;
       out.set(j.job_id, {
         externalId: sha1ish(j.job_id),
         title: j.job_title,
@@ -380,7 +431,7 @@ export const jsearch: Adapter = async (src, ctx) => {
         salaryMin: j.job_min_salary ?? null,
         salaryMax: j.job_max_salary ?? null,
         salaryCurrency: j.job_salary_currency ?? null,
-        raw: { applyOptions: (j.apply_options ?? []).map((o) => o.apply_link).filter(Boolean).slice(0, 10) },
+        raw: { applyOptions: (j.apply_options ?? []).map((o) => o.apply_link).filter(Boolean).slice(0, 10), employerSite: pick.employerSite },
       });
     }
   }

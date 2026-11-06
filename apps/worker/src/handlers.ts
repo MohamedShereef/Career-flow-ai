@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@careerflow/db";
-import { AppError, ai, autoapply, discovery, gmail, matching, queue } from "@careerflow/core";
+import { AppError, ai, autoapply, discovery, employerLink, gmail, matching, queue } from "@careerflow/core";
 import { applicantProfiles } from "@careerflow/db";
 
 export interface HandlerContext {
@@ -67,6 +67,7 @@ export const handlers: Record<string, Handler> = {
         out[u.id] = { error: msg.slice(0, 200) };
       }
     }
+    await queue.enqueue(db, { kind: "jobs.employer_sites", dedupeKey: "jobs:employer_sites", runAt: new Date(Date.now() + 60_000), timeoutSeconds: 900 });
     return out;
   },
 
@@ -80,7 +81,37 @@ export const handlers: Record<string, Handler> = {
       // Out of time but jobs remain: continue in a fresh task.
       await queue.enqueue(db, { kind: "matching.run_user", userId, payload: task.payload, timeoutSeconds: task.timeoutSeconds });
     }
+    await queue.enqueue(db, { kind: "jobs.employer_sites", dedupeKey: "jobs:employer_sites", runAt: new Date(Date.now() + 60_000), timeoutSeconds: 900 });
     return r;
+  },
+
+  /**
+   * Point recommended jobs at the employer's own posting, and start watching each employer's
+   * careers site that we learn about, so their next jobs come straight from the source.
+   */
+  "jobs.employer_sites": async ({ db }) => {
+    const users = await db.select({ id: applicantProfiles.userId }).from(applicantProfiles);
+    const out = { checked: 0, found: 0, newSources: 0 };
+    const newSources = new Set<string>();
+    for (const u of users) {
+      // Free: jobs already on an employer system we don't watch yet.
+      for (const jobId of await employerLink.jobsOnUnwatchedEmployerSites(db, u.id)) {
+        const r = await employerLink.resolveEmployerSite(db, jobId);
+        if (r.newSourceId) newSources.add(r.newSourceId);
+      }
+      // One cached web search each, best matches first.
+      for (const jobId of await employerLink.jobsNeedingEmployerSite(db, u.id, Number(process.env.EMPLOYER_SITE_SEARCHES ?? 10))) {
+        const r = await employerLink.resolveEmployerSite(db, jobId).catch(() => null);
+        out.checked++;
+        if (r?.status === "found") out.found++;
+        if (r?.newSourceId) newSources.add(r.newSourceId);
+      }
+    }
+    for (const sourceId of newSources) {
+      await queue.enqueue(db, { kind: "discovery.run_source", payload: { sourceId, trigger: "manual" }, dedupeKey: `discovery:${sourceId}`, timeoutSeconds: 900 });
+    }
+    out.newSources = newSources.size;
+    return out;
   },
 
   /** Read new job-related emails for everyone who connected Gmail. */
@@ -118,4 +149,5 @@ export const systemSchedules = [
   { kind: "discovery.run_all", intervalMinutes: Number(process.env.DISCOVERY_INTERVAL_MINUTES ?? 360) },
   { kind: "autopilot.run", intervalMinutes: Number(process.env.AUTOPILOT_INTERVAL_MINUTES ?? 60) },
   { kind: "gmail.sync_all", intervalMinutes: Number(process.env.GMAIL_SYNC_MINUTES ?? 15) },
+  { kind: "jobs.employer_sites", intervalMinutes: Number(process.env.EMPLOYER_SITES_MINUTES ?? 180) },
 ];

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { employers, matching } from "@careerflow/core";
 import { tailorForJobAction, undoNotInterestedAction } from "@/actions/jobs";
 import { NotInterested } from "@/components/not-interested";
+import { LinkBadge, employerSiteChecked } from "@/components/link-badge";
 import { ActionForm, SubmitButton } from "@/components/forms";
 import { Badge, Card, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
@@ -96,6 +97,7 @@ export default async function JobDetail({ params }: { params: Promise<{ id: stri
           </Card>
           <Card title="Posting">
             <ul className="space-y-1 text-sm">
+              <li><span className="text-muted">Apply on:</span> <a href={j.applyUrl} target="_blank" rel="noopener"><LinkBadge url={j.applyUrl} company={j.companyName} raw={j.raw} checked={employerSiteChecked(j.raw)} /></a></li>
               <li><span className="text-muted">Source:</span> {j.atsKind}</li>
               {j.employmentType && <li><span className="text-muted">Type:</span> {j.employmentType}</li>}
               {j.postedAt && <li><span className="text-muted">Posted:</span> {fmtDate(j.postedAt)}</li>}

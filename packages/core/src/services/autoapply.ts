@@ -427,59 +427,15 @@ export async function loadFile(db: Executor, documentId: string) {
 
 // ───────────────────────── Starting ─────────────────────────
 
+export { atsFromUrl, isJobBoardUrl, jobOnEmployerSite, onEmployerSite, probablyNotEmployerSite } from "../job-links";
+import { atsFromUrl, isJobBoardUrl, jobOnEmployerSite, onEmployerSite, probablyNotEmployerSite } from "../job-links";
+
 export const SUPPORTED_ATS = ["greenhouse", "lever", "ashby", "workable", "smartrecruiters", "career_site"] as const;
-
-/** Sites that repost jobs. Their pages rarely hold the employer's form; we follow their Apply link instead. */
-const JOB_BOARD_HOSTS =
-  /(^|\.)(indeed\.[a-z.]+|glassdoor\.[a-z.]+|bayt\.com|naukrigulf\.com|gulftalent\.com|recruit\.net|jooble\.org|talent\.com|jobrapido\.com|whatjobs\.com|adzuna\.[a-z.]+|careerjet\.[a-z.]+|jobsora\.com|simplyhired\.[a-z.]+|ziprecruiter\.[a-z.]+|monster\.[a-z.]+|drjobpro\.com|drjob\.[a-z.]+|akhtaboot\.com|wuzzuf\.net|tanqeeb\.com|laimoon\.com|expatriates\.com|dubizzle\.com|jobleads\.com|lensa\.com|learn4good\.com|jobtome\.com|jobted\.[a-z.]+|neuvoo\.[a-z.]+|jora\.com|mourjan\.com|founditgulf\.com|monstergulf\.com|naukri\.com|shine\.com|xpatjobs\.[a-z.]+|ksa-jobs\.com|saudijobs\.[a-z.]+|jobzmall\.com|ladders\.com|dice\.com|google\.com|bebee\.com|mihnati\.com|jobsora\.com|trabajo\.org|jobisjob\.[a-z.]+|joblist\.com|snagajob\.com|workcircle\.com|jobilize\.com|salary\.com|glints\.com|careerbuilder\.com|jobsinsaudi\.[a-z.]+|gulfjobs\.[a-z.]+|jobslin\.com|jobsearchsaudi\.[a-z.]+|recruitmentsaudi\.[a-z.]+|recruiter\.com|jobtoday\.com|adzuna\.[a-z.]+|jobberman\.com|hirect\.in|apna\.co|wellfound\.com|builtin\.com|jooble\.[a-z.]+|kitjob\.[a-z.]+|jobsdb\.com|jobstreet\.[a-z.]+|seek\.com\.au|reed\.co\.uk|totaljobs\.com|cv-library\.co\.uk|stepstone\.[a-z.]+|xing\.com|infojobs\.[a-z.]+|computrabajo\.[a-z.]+|olx\.[a-z.]+|opensooq\.com|haraj\.com\.sa)$/;
-
-export function isJobBoardUrl(url: string) {
-  const k = atsFromUrl(url);
-  return k === "job_board" || k === "linkedin";
-}
-
-/**
- * A "career site" link whose address doesn't mention the employer is probably a job board we
- * don't know yet (bebee, …): look for the employer's own posting before trusting it.
- */
-export function probablyNotEmployerSite(url: string, companyName: string) {
-  if (isJobBoardUrl(url)) return true;
-  if (atsFromUrl(url) !== "career_site") return false;
-  let host = "";
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return true;
-  }
-  const words = companyName.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").split(" ").filter((w) => w.length >= 4 && !["company", "group", "arabia", "saudi", "international", "contracting", "investment", "holding", "limited", "trading"].includes(w));
-  return words.length > 0 && !words.some((w) => host.includes(w)) && !host.includes(words.join(""));
-}
 
 /** The link the agent should use: one the user pasted for this application wins over the discovered one. */
 export function applyUrlFor(app: { checkpointData: unknown }, job: { applyUrl: string }) {
   const override = (app.checkpointData as { applyUrl?: string } | null)?.applyUrl;
   return override || job.applyUrl;
-}
-
-/** Best guess of the application system from the link. */
-export function atsFromUrl(url: string): string {
-  let h = "";
-  try {
-    h = new URL(url).hostname.toLowerCase();
-  } catch {
-    return "unknown";
-  }
-  if (/greenhouse\.io$/.test(h)) return "greenhouse";
-  if (/lever\.co$/.test(h)) return "lever";
-  if (/ashbyhq\.com$/.test(h)) return "ashby";
-  if (/workable\.com$/.test(h)) return "workable";
-  if (/smartrecruiters\.com$/.test(h)) return "smartrecruiters";
-  if (/myworkdayjobs\.com$|workday\.com$/.test(h)) return "workday";
-  if (/successfactors\.|jobs2web\.com$|sapsf\./.test(h)) return "successfactors";
-  if (/taleo\.net$|oraclecloud\.com$/.test(h)) return "oracle";
-  if (/(^|\.)linkedin\.com$/.test(h)) return "linkedin";
-  if (JOB_BOARD_HOSTS.test(h)) return "job_board";
-  return "career_site";
 }
 
 export async function startAutoApply(db: Db, userId: string, input: { jobId: string; tailoringId?: string | null; origin?: "user" | "autopilot"; applyUrl?: string | null }) {
@@ -570,13 +526,13 @@ export async function loadContext(db: Db, applicationId: string) {
 // ───────────────────────── Worker → state transitions ─────────────────────────
 
 const ERROR_TEXT: Record<Blocker["kind"], string> = {
-  captcha: "The page shows a robot check (CAPTCHA / “verify you are human”). CareerFlow doesn't bypass those. Open it yourself and apply with your CV — or paste the employer's own application link below.",
+  captcha: "The page shows a robot check (CAPTCHA / “verify you are human”) and CareerFlow couldn't find this job on the employer's own careers site. CareerFlow doesn't bypass robot checks. Paste the employer's own application link below, or open the page and apply with your CV.",
   login_required: "This employer's portal needs an account. Create one there yourself (once), then save its email and password below — CareerFlow signs in and continues the application.",
   login_failed: "The saved login didn't work on this portal. Check the email and password in Settings → Saved logins (or reset it on the portal), then try again.",
   verification_required: "The portal asked for a verification code or email confirmation. Sign in there once yourself to complete it, then press “Try automatic again”.",
   form_missing: "We couldn't find an application form on the employer's page. Open it and apply with your CV.",
   unsupported_ats: "This application system isn't supported for automatic filling yet. Open the page and apply with your CV.",
-  job_board: "This link goes to a job site that reposts jobs, not the employer's own application page, and it doesn't link through to one. Find the job on the employer's careers site and paste that link below — CareerFlow continues from there.",
+  job_board: "This job is only listed on job sites that repost jobs, and CareerFlow couldn't find it on the employer's own careers site. If you find it there, paste that link below — CareerFlow continues from there.",
   navigation_timeout: "The employer's page didn't load. We'll try again later.",
   fill_failed: "Some fields on the employer's form couldn't be filled automatically. Open the page and apply with your CV.",
 };
@@ -931,7 +887,8 @@ export async function autopilotCandidates(db: Db, userId: string, limit: number)
   return rows
     .filter((r) => {
       const k = atsFromUrl(r.j.applyUrl);
-      return !!r.j.description && ((SUPPORTED_ATS as readonly string[]).includes(k) || (["workday", "successfactors", "oracle"].includes(k) && saved.has(host(r.j.applyUrl))));
+      // Only the employer's own site: job boards show robot checks and rarely hold the form.
+      return !!r.j.description && jobOnEmployerSite(r.j) && ((SUPPORTED_ATS as readonly string[]).includes(k) || (["workday", "successfactors", "oracle"].includes(k) && saved.has(host(r.j.applyUrl))));
     })
     .slice(0, limit);
 }

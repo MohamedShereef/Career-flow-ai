@@ -14,6 +14,7 @@ import { AppError, notFound } from "../errors";
 import { employerKey } from "../normalize";
 import type { Db } from "../types";
 import { audit } from "./audit";
+import { onEmployerSite } from "../job-links";
 
 // ── Relevance prefilter (cheap, deterministic; AI judges the rest) ──
 
@@ -30,7 +31,7 @@ export const DEFAULT_QUERIES = ["procurement", "purchasing", "supply chain", "co
 // ── Sources ──
 
 export const sourceInputSchema = z.object({
-  kind: z.enum(["google_jobs", "jsearch", "workday", "smartrecruiters", "workable", "greenhouse", "lever", "ashby", "successfactors"]),
+  kind: z.enum(["google_jobs", "jsearch", "workday", "smartrecruiters", "workable", "greenhouse", "lever", "ashby", "successfactors", "oracle"]),
   name: z.string().trim().min(2).max(120),
   identifier: z.string().trim().min(2).max(300),
 });
@@ -41,6 +42,11 @@ export const SEED_SOURCES: Array<z.infer<typeof sourceInputSchema>> = [
   { kind: "smartrecruiters", name: "AECOM", identifier: "AECOM2" },
   { kind: "workday", name: "KBR", identifier: "https://kbr.wd5.myworkdayjobs.com/KBR_Careers" },
   { kind: "workable", name: "Qiddiya Investment Company", identifier: "qiddiya" },
+  // PIF companies and client-side employers (official career sites). Each is checked on its first run.
+  { kind: "successfactors", name: "Saudi Entertainment Ventures (SEVEN)", identifier: "https://careers.seven.sa" },
+  { kind: "successfactors", name: "Diriyah Company", identifier: "https://careers.dgda.gov.sa" },
+  { kind: "oracle", name: "ROSHN", identifier: "https://fa-epph-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX" },
+  { kind: "successfactors", name: "Saudi Aramco", identifier: "https://careers.aramco.com" },
 ];
 
 export const AGGREGATORS = new Set(["google_jobs", "jsearch"]);
@@ -62,7 +68,7 @@ export async function addSource(db: Db, userId: string, input: unknown) {
   const r = sourceInputSchema.safeParse(input);
   if (!r.success) throw new AppError("invalid_source", r.error.issues[0]?.message ?? "Invalid source.");
   const v = r.data;
-  if (v.kind === "workday" || v.kind === "successfactors") {
+  if (v.kind === "workday" || v.kind === "successfactors" || v.kind === "oracle") {
     try {
       new URL(v.identifier);
     } catch {
@@ -199,13 +205,17 @@ export async function runSource(db: Db, sourceId: string, trigger: "scheduled" |
         sourceUrl: job.sourceUrl,
         applyUrl: job.applyUrl,
         postedAt: job.postedAt,
-        ...(job.raw !== undefined ? { raw: job.raw } : {}),
+        // Postings read from an employer's own careers site are marked official, whatever its domain.
+        ...(!AGGREGATORS.has(src.kind) ? { raw: { ...((job.raw as Record<string, unknown> | undefined) ?? {}), official: true } } : job.raw !== undefined ? { raw: job.raw } : {}),
         status: "active" as const,
         lastSeenAt: new Date(),
         closedAt: null,
       };
       if (prev) {
-        const { dedupeKey: _keep, raw: newRaw, ...updateValues } = values as typeof values & { raw?: unknown }; // keep the original dedupe identity
+        const { dedupeKey: _keep, raw: newRaw, ...allUpdate } = values as typeof values & { raw?: unknown }; // keep the original dedupe identity
+        // A search engine may list only job boards today: never replace an employer link with one.
+        const { applyUrl: _a, atsKind: _k, ...withoutLink } = allUpdate;
+        const updateValues = AGGREGATORS.has(src.kind) && !onEmployerSite(values.applyUrl, values.companyName) ? withoutLink : allUpdate;
         await db
           .update(jobs)
           .set({ ...updateValues, ...(newRaw !== undefined ? { raw: sql`coalesce(${jobs.raw}, '{}'::jsonb) || ${JSON.stringify(newRaw)}::jsonb` } : {}) })
@@ -215,15 +225,20 @@ export async function runSource(db: Db, sourceId: string, trigger: "scheduled" |
         const ins = await db.insert(jobs).values(values).onConflictDoNothing().returning({ id: jobs.id });
         if (ins.length) result.new++;
         else {
-          // Same posting already known from another board: just mark it seen.
-          await db.update(jobs).set({ lastSeenAt: new Date(), status: "active", closedAt: null }).where(eq(jobs.dedupeKey, values.dedupeKey));
+          // Same posting already known from another board: mark it seen, and when this copy is the
+          // employer's own, apply there from now on.
+          const official = !AGGREGATORS.has(src.kind);
+          await db
+            .update(jobs)
+            .set({ lastSeenAt: new Date(), status: "active", closedAt: null, ...(official ? { applyUrl: values.applyUrl, atsKind: values.atsKind, sourceUrl: values.sourceUrl, description: sql`coalesce(${jobs.description}, ${values.description})`, raw: sql`coalesce(${jobs.raw}, '{}'::jsonb) || '{"official": true}'::jsonb` } : {}) })
+            .where(eq(jobs.dedupeKey, values.dedupeKey));
           result.updated++;
         }
       }
     }
 
     // Close postings that vanished. Keyword-searched boards only close after a week unseen.
-    const keywordBoard = src.kind === "workday" || src.kind === "successfactors" || AGGREGATORS.has(src.kind);
+    const keywordBoard = src.kind === "workday" || src.kind === "successfactors" || src.kind === "oracle" || AGGREGATORS.has(src.kind);
     const cutoff = keywordBoard ? new Date(Date.now() - 7 * 86_400_000) : started;
     const closed = await db
       .update(jobs)

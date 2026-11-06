@@ -71,12 +71,14 @@ async function reportLogin(ctx: HandlerContext, used: { id?: string }, outcome?:
 
 const prepare: Handler = async (ctx) => {
   const applicationId = String(ctx.task.payload.applicationId);
+  const redirected = ctx.task.payload.redirected === true;
   const { app, job, ctx: planCtx } = await autoapply.loadContext(ctx.db, applicationId);
   if (app.status !== "processing") return { skipped: `status ${app.status}` };
 
   let startUrl = autoapply.applyUrlFor(app, job);
   // Job boards often show robot checks and don't host the form: look for the employer's own posting first.
-  if (autoapply.probablyNotEmployerSite(startUrl, job.companyName)) {
+  const official = startUrl === job.applyUrl && autoapply.jobOnEmployerSite(job);
+  if (!official && autoapply.probablyNotEmployerSite(startUrl, job.companyName)) {
     const found = await employerLink.findEmployerLink(ctx.db, job).catch(() => null);
     if (found) {
       const h = (u: string) => hostOf(u).replace(/^www\./, "") || u;
@@ -113,6 +115,17 @@ const prepare: Handler = async (ctx) => {
     if (landed === "linkedin") {
       await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: `Ended on LinkedIn (${snapshot.url})` }, ctx.task.id);
       return { blocked: "linkedin" };
+    }
+    // Stopped by a robot check or a page without a form, away from the employer's site:
+    // look for the same job on the employer's own careers site before giving up.
+    const stuck = snapshot.blockers[0]?.kind === "captcha" || snapshot.blockers[0]?.kind === "form_missing";
+    if (stuck && !official && !autoapply.onEmployerSite(snapshot.url, job.companyName) && !redirected) {
+      const alt = await employerLink.findEmployerLink(ctx.db, job).catch(() => null);
+      if (alt && alt.url !== startUrl) {
+        await autoapply.useEmployerLink(ctx.db, app.id, alt.url, `The job site showed ${snapshot.blockers[0]!.kind === "captcha" ? "a robot check" : "no application form"} — found the job on ${job.companyName}'s own site and switched there.`);
+        await queue.enqueue(ctx.db, { kind: "application.prepare", userId: app.userId, payload: { applicationId: app.id, redirected: true }, dedupeKey: `apply:prepare:${app.id}:employer`, maxAttempts: 2, timeoutSeconds: 900 });
+        return { redirected: alt.url };
+      }
     }
     if (snapshot.blockers[0]?.kind === "form_missing" && (landed === "job_board" || autoapply.probablyNotEmployerSite(snapshot.url, job.companyName))) {
       await autoapply.recordBlocker(ctx.db, app.id, { kind: "job_board", detail: snapshot.blockers[0].detail }, ctx.task.id);

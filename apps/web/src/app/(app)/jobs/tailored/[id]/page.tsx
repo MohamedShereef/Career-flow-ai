@@ -85,8 +85,8 @@ export default async function Tailored({ params, searchParams }: { params: Promi
                     <>
                       <p className="mt-1 text-sm text-slate-700">
                         It opens {host || "the employer's page"}, fills the form from your profile, uploads this CV, and shows you everything before pressing Submit.
-                        {apply.job && autoapply.isJobBoardUrl(apply.job.applyUrl)
-                          ? ` Note: this link is on ${host}, a job site that reposts jobs. CareerFlow will try to follow it to ${t.companyName}'s own page; if it can't, it will ask you for the employer's link.`
+                        {apply.job && !autoapply.jobOnEmployerSite(apply.job)
+                          ? ` Note: so far this job was only found on ${host}, a job site that reposts jobs. CareerFlow first searches ${t.companyName}'s own careers site and applies there; if it isn't there, it asks you for the employer's link.`
                           : !autoSupported && " This employer's system usually needs an account — if so it will tell you and you apply with the steps below."}
                       </p>
                       <ActionForm action={autoApplyAction} className="mt-2">
