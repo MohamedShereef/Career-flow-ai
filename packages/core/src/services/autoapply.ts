@@ -132,12 +132,25 @@ function bestOption(options: string[] | undefined, wanted: string): string | nul
   return contains.length === 1 ? contains[0]! : null;
 }
 
+/**
+ * The number inside an answer, for fields that take digits only:
+ * "3,5" → 3.5 · "SAR 25,000 monthly" → 25000 · "30k" → 30000 · "3.2 out of 4" → 3.2 · "Very Good" → null.
+ */
+export function numberIn(v: string): string | null {
+  const t = v.trim();
+  if (/^\d+([.,]\d+)?$/.test(t)) return t.replace(",", ".");
+  const m = t.replace(/(\d)[,\u066C](?=\d{3}\b)/g, "$1").match(/(\d+(?:\.\d+)?)\s*(k\b|thousand\b)?/i);
+  if (!m) return null;
+  const n = Number(m[1]) * (m[2] ? 1000 : 1);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : null;
+}
+
 function asValue(field: FormField, raw: string): AnswerValue | null {
   const v = raw.trim();
   if (!v) return null;
   if (isNumeric(field) && (field.type === "text" || field.type === "number")) {
-    const n = v.replace(/,/g, ".").match(/^\d+(\.\d+)?$/);
-    return n ? { kind: "text", value: n[0] } : null; // "Very Good" is not a GPA
+    const n = numberIn(v);
+    return n ? { kind: "text", value: n } : null; // "Very Good" is not a GPA
   }
   if (field.type === "checkbox") {
     if (/^(yes|true|y|i agree|agree|نعم)$/i.test(v)) return { kind: "bool", value: true };

@@ -18,15 +18,42 @@ export const EXTRACT = String.raw`(() => {
   const forms = [...document.querySelectorAll("form")].sort((a, b) => score(b) - score(a));
   const root = forms[0] && score(forms[0]) >= 3 ? forms[0] : document.body;
 
+  // A container that also holds other questions is too far up: its label belongs to someone else.
+  const otherFields = (c, el) => [...c.querySelectorAll("input:not([type=hidden]):not([type=radio]):not([type=checkbox]), select, textarea, [role=combobox]")].filter((x) => x !== el && !el.contains(x) && !x.contains(el)).length
+    + new Set([...c.querySelectorAll("input[type=radio], input[type=checkbox]")].filter((x) => x !== el && x.name !== el.name).map((x) => x.name)).size;
   const near = (el, max) => {
     let c = el.parentElement;
-    for (let i = 0; i < max && c && c !== document.body; i++, c = c.parentElement) {
+    for (let i = 0; i < max && c && c !== document.body && !otherFields(c, el); i++, c = c.parentElement) {
       const l = c.querySelector("label, legend, [class*='label'], [class*='question'], h3, h4");
       if (l && !l.contains(el) && !l.querySelector("input,select,textarea") && textOf(l)) return textOf(l);
     }
     return "";
   };
+  const idLike = (t, el) => /^[A-Za-z]{1,6}[_-]?\d{2,}$/.test(t) || t === el.name || t === el.id;
+  /** The closest text written before the field inside its own block (skipping options, buttons and "*"). */
+  const precedingText = (el) => {
+    let c = el.parentElement;
+    for (let i = 0; i < 5 && c && c !== document.body && c !== root && !otherFields(c, el); i++, c = c.parentElement) {
+      const w = document.createTreeWalker(c, NodeFilter.SHOW_TEXT);
+      let last = "";
+      for (let n = w.nextNode(); n; n = w.nextNode()) {
+        if (el.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) break;
+        const p = n.parentElement;
+        if (!p || p.closest("option, [role=option], [role=listbox], select, button, script, style, [aria-hidden=true]")) continue;
+        const own = p.closest("label");
+        if (own && own.control && own.control !== el) continue; // another field's label
+        const t = clean(n.textContent);
+        if (t.length > 1 && !/^[*:]+$/.test(t) && !idLike(t, el)) last = t;
+      }
+      if (last) return last;
+    }
+    return "";
+  };
   const labelFor = (el) => {
+    const l = baseLabel(el);
+    return idLike(l, el) ? precedingText(el) || l : l;
+  };
+  const baseLabel = (el) => {
     if (el.id) {
       const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
       if (l && textOf(l)) return textOf(l);
@@ -40,7 +67,10 @@ export const EXTRACT = String.raw`(() => {
     if (al && clean(al)) return clean(al);
     const wrap = el.closest("label");
     if (wrap && textOf(wrap)) return textOf(wrap);
-    return near(el, 4) || clean(el.getAttribute("placeholder") || el.getAttribute("name") || el.id || "");
+    const n = near(el, 4);
+    // Internal ids (Workable "CA_36432", "QA_123") are not questions: read the text written before the field.
+    if (n && !idLike(n, el)) return n;
+    return precedingText(el) || n || clean(el.getAttribute("placeholder") || el.getAttribute("name") || el.id || "");
   };
   const groupLabel = (el) => {
     const fs = el.closest("fieldset");
@@ -51,7 +81,8 @@ export const EXTRACT = String.raw`(() => {
       if (lb) { const t = clean(lb.split(/\s+/).map((i) => textOf(document.getElementById(i))).join(" ")); if (t) return t; }
       if (rg.getAttribute("aria-label")) return clean(rg.getAttribute("aria-label"));
     }
-    return near(el, 5) || el.name || "";
+    const n = near(el, 5);
+    return n && !idLike(n, el) ? n : precedingText(el) || n || el.name || "";
   };
   // Required: the attribute, an asterisk in the label, or (as on SuccessFactors) an asterisk / "required"
   // marker in a separate element next to the field.

@@ -500,6 +500,60 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
   fill: async ({ loc, a }) => {
     await loc.first().fill(valueOf(a), T);
   },
+  // The same answer in the form the field takes: digits only for amounts, national / international phone.
+  fill_variants: async (c) => {
+    const { form, loc, a } = c;
+    const el = loc.first();
+    const variants = textVariants(a);
+    if (!variants.length) throw new Error("no other format to try");
+    for (const v of variants) {
+      for (const how of ["fill", "type"] as const) {
+        if (how === "fill") await el.fill(v, T).catch(() => undefined);
+        else {
+          await el.click(T).catch(() => undefined);
+          await el.press("ControlOrMeta+a").catch(() => undefined);
+          await el.press("Backspace").catch(() => undefined);
+          await el.pressSequentially(v, { delay: 40, ...T }).catch(() => undefined);
+        }
+        await el.evaluate((e) => (e as unknown as HTMLElement).blur()).catch(() => undefined);
+        await sleep(300);
+        if (await keeps(form, { ...a, value: { kind: "text", value: v } })) {
+          c.chosen = v;
+          return;
+        }
+      }
+    }
+    throw new Error(`the field didn't take ${variants.join(" / ")}`);
+  },
+  // Address / city fields that only keep a value picked from their suggestions.
+  type_suggest: async (c) => {
+    const { form, page, loc, a } = c;
+    const el = loc.first();
+    const want = valueOf(a);
+    const firstWord = (want.split(/[,،]/)[0] ?? want).trim();
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    await el.press("ControlOrMeta+a").catch(() => undefined);
+    await el.press("Backspace").catch(() => undefined);
+    await el.pressSequentially(firstWord, { delay: 90, ...T });
+    const opts = page.locator('[role=option]:visible, .pac-item:visible, [class*="suggestion"] li:visible, [class*="autocomplete"] li:visible, [class*="Suggestion"]:visible');
+    for (let i = 0; i < 8 && !(await opts.count()); i++) await sleep(400);
+    const n = await opts.count();
+    if (!n) throw new Error("no suggestions appeared");
+    const token = firstWord.toLowerCase();
+    for (let i = 0; i < Math.min(n, 10); i++) {
+      const t = ((await opts.nth(i).innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+      if (!t.toLowerCase().includes(token)) continue;
+      await opts.nth(i).click(T).catch(() => undefined);
+      await sleep(600);
+      const back = ((await form.evaluate(`${READBACK}(${JSON.stringify([a.key])})`).catch(() => ({}))) as Record<string, unknown>)[a.key];
+      const shown = String(back ?? "").trim();
+      if (shown && shown.toLowerCase().includes(token)) {
+        c.chosen = shown; // the preview shows exactly what the site holds
+        return;
+      }
+    }
+    throw new Error(`no suggestion matched "${firstWord}"`);
+  },
   type_keys: async ({ loc, a }) => {
     const el = loc.first();
     await el.click(T).catch(() => el.click({ force: true, ...T }));
@@ -515,7 +569,7 @@ const DEFAULT_ORDER: Record<Group, string[]> = {
   select: ["select_option", "set_select", "select_keyboard"],
   choice: ["dom_choose", "force_check"],
   list: ["click_option", "type_pick", "focus_type_enter", "arrow_enter", "native_nearby"],
-  text: ["fill", "type_keys"],
+  text: ["fill", "type_keys", "fill_variants", "type_suggest"],
 };
 
 /** Run an AI rescue plan, refusing anything outside the field's own widget. */
@@ -611,8 +665,9 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
       at.error = lastError;
     }
     await sleep(300);
-    // Picklists only commit (or reset) when you leave the field, so judge them after leaving it.
-    if (group === "list") {
+    // Picklists and many text fields (address autocompletes, masks) only commit or reset when you
+    // leave the field, so judge them after leaving it.
+    if (group === "list" || group === "text") {
       await form.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()").catch(() => undefined);
       await sleep(400);
     }
@@ -648,8 +703,55 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
 }
 
 async function keeps(form: Frame, a: PlannedAnswer) {
-  const back = (await form.evaluate(`${READBACK}(${JSON.stringify([a.key])})`).catch(() => ({}))) as Record<string, unknown>;
-  return kept(a, back[a.key]);
+  const read = async () => ((await form.evaluate(`${READBACK}(${JSON.stringify([a.key])})`).catch(() => ({}))) as Record<string, unknown>)[a.key];
+  let got = await read();
+  // React forms (Workable…) often replace the element after typing: find it again before judging.
+  if (got === null || got === undefined) {
+    await retag(form);
+    got = await read();
+  }
+  return kept(a, got);
+}
+
+const digits = (s: string) => s.replace(/\D/g, "");
+/** Mostly a number: a phone, an amount, a count. */
+const numberLike = (s: string) => {
+  const d = digits(s).length;
+  return d >= 1 && d / Math.max(1, s.replace(/[\s,.+()\-]/g, "").length) >= 0.5;
+};
+/** "SAR 25,000 per month" → "25000"; "30k" → "30000"; first amount only. */
+export function amountOf(s: string) {
+  const m = s.replace(/(\d),(\d{3})/g, "$1$2").match(/(\d+(?:\.\d+)?)\s*(k|thousand)?\b/i);
+  if (!m) return null;
+  const n = Number(m[1]) * (m[2] ? 1000 : 1);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : null;
+}
+/** The same phone number written the ways forms ask for it. */
+export function phoneVariants(s: string) {
+  const d = digits(s);
+  if (d.length < 8) return [];
+  const out = new Set<string>();
+  const cc = ["966", "971", "20", "974", "965", "973", "968", "962", "1", "44"].find((c) => d.startsWith(c) && d.length - c.length >= 8);
+  const national = cc ? d.slice(cc.length).replace(/^0/, "") : d.replace(/^0/, "");
+  if (cc) out.add(`+${cc}${national}`).add(`${cc}${national}`);
+  out.add(`0${national}`).add(national);
+  return [...out];
+}
+
+/** Values to try when a text field doesn't keep the answer as written (numeric-only, masked, national phone). */
+function textVariants(a: PlannedAnswer) {
+  const v = valueOf(a);
+  const out: string[] = [];
+  if (/phone|mobile|tel|whatsapp|جوال|هاتف/i.test(`${a.label} ${a.type}`) || (a.type === "tel")) out.push(...phoneVariants(v));
+  const amt = amountOf(v);
+  if (amt && amt !== v && (a.type === "number" || /salary|amount|pay|compensation|expected|current|years|notice|days|راتب|سنوات/i.test(a.label) || numberLike(v))) out.push(amt);
+  return [...new Set(out)].filter((x) => x && x !== v).slice(0, 5);
+}
+
+/** Same phone even when the site shows the country code apart (or adds it): compare the last 9 digits. */
+function samePhone(g: string, w: string) {
+  const a = digits(g), b = digits(w);
+  return a.length >= 8 && b.length >= 8 && a.slice(-9) === b.slice(-9);
 }
 
 function kept(a: PlannedAnswer, got: unknown) {
@@ -660,8 +762,10 @@ function kept(a: PlannedAnswer, got: unknown) {
   if (v.kind === "multi") return Array.isArray(got) && v.values.every((x) => (got as string[]).some((g) => eqText(g, x)));
   const g = String(got);
   if (a.type === "combobox" || a.type === "listbox") return eqText(g, v.value) || g.toLowerCase().includes(v.value.toLowerCase().slice(0, 30));
-  if (a.type === "date" || a.type === "tel" || a.type === "number") return g.replace(/\D/g, "") === v.value.replace(/\D/g, "") || eqText(g, v.value);
+  if (a.type === "date" || a.type === "tel" || a.type === "number") return g.replace(/\D/g, "") === v.value.replace(/\D/g, "") || eqText(g, v.value) || samePhone(g, v.value);
   if (a.type === "radio" || a.type === "select") return eqText(g, v.value) || g.toLowerCase().startsWith(v.value.toLowerCase());
+  // Masked/formatted fields: "+966 50 123 4567" for "+966501234567", "25,000" for "25000".
+  if (numberLike(v.value) && numberLike(g)) return digits(g) === digits(v.value) || samePhone(g, v.value);
   return eqText(g, v.value);
 }
 

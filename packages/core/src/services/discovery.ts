@@ -42,6 +42,7 @@ export const SEED_SOURCES: Array<z.infer<typeof sourceInputSchema>> = [
   { kind: "smartrecruiters", name: "AECOM", identifier: "AECOM2" },
   { kind: "workday", name: "KBR", identifier: "https://kbr.wd5.myworkdayjobs.com/KBR_Careers" },
   { kind: "workable", name: "Qiddiya Investment Company", identifier: "qiddiya" },
+  { kind: "workable", name: "Qiddiya Investment Company", identifier: "qiddiya-investment-company-1" },
   // PIF companies and client-side employers (official career sites). Each is checked on its first run.
   { kind: "successfactors", name: "Saudi Entertainment Ventures (SEVEN)", identifier: "https://careers.seven.sa" },
   { kind: "successfactors", name: "Diriyah Company", identifier: "https://careers.dgda.gov.sa" },

@@ -15,6 +15,7 @@ import { documents } from "@careerflow/db";
 import { applyHandlers } from "../src/apply/handlers";
 import { PORTAL_HTML, PORTAL_USER } from "./portal-mock";
 import { TRICKY_HTML } from "./tricky-mock";
+import { WORKABLE_HTML } from "./workable-mock";
 import type { HandlerContext } from "../src/handlers";
 import { closeDb, makeUser, testDb } from "../../../test/helpers";
 
@@ -26,6 +27,7 @@ let base = "";
 const received: Array<Record<string, string>> = [];
 const portalSubmissions: Array<Record<string, string>> = [];
 const trickySubmissions: Array<Record<string, string>> = [];
+const workableSubmissions: Array<Record<string, string>> = [];
 let implicitPosts = 0;
 
 const FORM = (extra = "") => `<!doctype html><html><head><title>Senior Procurement Engineer – Acme Giga</title></head><body>
@@ -81,6 +83,23 @@ beforeAll(async () => {
       implicitPosts++;
       res.writeHead(200, { "content-type": "text/html" });
       return res.end("<html><body>Thank you for applying</body></html>");
+    }
+    if (req.url === "/workable") {
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(WORKABLE_HTML);
+    }
+    if (req.url === "/workable/submit" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks).toString("latin1");
+        const fields: Record<string, string> = {};
+        for (const m of body.matchAll(/name="([^"]+)"(?:; filename="([^"]*)")?\r\n(?:Content-Type: [^\r]+\r\n)?\r\n([\s\S]*?)\r\n--/g)) fields[m[1]!] = m[2] ? `FILE:${m[2]}` : m[3]!;
+        workableSubmissions.push(fields);
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<html><body><h1>Thank you for applying!</h1><p>Your application has been received.</p></body></html>");
+      });
+      return;
     }
     if (req.url === "/tricky") {
       res.writeHead(200, { "content-type": "text/html" });
@@ -341,6 +360,34 @@ run("auto-apply in a real browser", () => {
     const typed = await db.select().from(fieldRecipes).where(eq(fieldRecipes.strategy, "focus_type_enter"));
     expect(Math.max(...typed.map((t) => t.successes))).toBeGreaterThanOrEqual(2); // learned for the widget it worked on
   }, 300_000);
+
+  it("Workable-style form: reads questions written beside the field, fits phone/salary to the field's format, picks the address suggestion", async () => {
+    const db = testDb();
+    const { user, job } = await setup("/workable");
+    await profile.updateProfile(db, user.id, { address: "Riyadh, Saudi Arabia" });
+    await answers.saveAnswer(db, user.id, { questionText: "Expected Salary", answer: "SAR 25,000 monthly", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Are you willing to relocate within Saudi Arabia?", answer: "Yes", scope: "global" });
+    ai.setAiTransportForTests(async (req) => {
+      if (req.schemaName === "field_rescue") return { model: "t", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ steps: [], reason: "none" }) };
+      const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1] ?? "[]") as Array<{ key: string }>;
+      return { model: "t", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: qs.map((q) => ({ key: q.key, answer: null })) }) };
+    });
+    const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { previewId?: string; blocked?: string; problems?: unknown };
+    expect(r.blocked, JSON.stringify(r)).toBeUndefined();
+    expect(r.previewId, JSON.stringify(r) + JSON.stringify((await answers.listPendingQuestions(db, user.id)).map((q) => q.questionText))).toBeTruthy();
+    const d = await autoapply.getDetail(db, user.id, app.id);
+    const got = Object.fromEntries(d.preview!.data.answers.map((x) => [x.label, x.value.kind === "text" ? x.value.value : x.value.kind]));
+    // Questions read from the text beside the field, not "CA_36432".
+    expect(got).toMatchObject({ "Expected Salary": "25000", "Are you willing to relocate within Saudi Arabia?": "Yes", Address: "Riyadh, Saudi Arabia" });
+    expect(Object.keys(got).some((k) => /^CA_/.test(k))).toBe(false);
+
+    const ap = await autoapply.approve(db, user.id, r.previewId!);
+    const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
+    expect(s.outcome).toBe("confirmed");
+    expect(workableSubmissions).toHaveLength(1);
+    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", CA_36432: "25000", CA_50967: "Yes" });
+  }, 240_000);
 
   it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {
     const db = testDb();
