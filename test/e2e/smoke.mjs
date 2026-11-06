@@ -105,10 +105,11 @@ await step("08-home", async () => {
 
 await step("09-settings-limits", async () => {
   await page.goto(`${BASE}/settings`);
-  await page.fill('input[name="maxSubmissionsPerDay"]', "50");
+  if ((await page.inputValue('select[name="dailyLimitsEnabled"]')) !== "off") throw new Error("daily limits should be off by default");
+  await page.fill('input[name="maxSubmissionsPerDay"]', "51");
   await page.evaluate(() => document.querySelectorAll("input").forEach((i) => i.removeAttribute("max")));
   await page.click('button:has-text("Save limits")');
-  await expectText("less than or equal to 5");
+  await expectText("less than or equal to 50"); // the server still enforces the ceiling when limits are on
   await page.goto(`${BASE}/settings?tab=diagnostics`);
   await expectText("Workers");
 });
