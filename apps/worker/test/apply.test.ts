@@ -367,6 +367,7 @@ run("auto-apply in a real browser", () => {
     await profile.updateProfile(db, user.id, { address: "Riyadh, Saudi Arabia" });
     await answers.saveAnswer(db, user.id, { questionText: "Expected Salary", answer: "SAR 25,000 monthly", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Are you willing to relocate within Saudi Arabia?", answer: "Yes", scope: "global" });
+    await answers.saveAnswer(db, user.id, { questionText: "Do you hold a valid Saudi Iqama?", answer: "Yes", scope: "global" });
     ai.setAiTransportForTests(async (req) => {
       if (req.schemaName === "field_rescue") return { model: "t", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ steps: [], reason: "none" }) };
       const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1] ?? "[]") as Array<{ key: string }>;
@@ -379,14 +380,14 @@ run("auto-apply in a real browser", () => {
     const d = await autoapply.getDetail(db, user.id, app.id);
     const got = Object.fromEntries(d.preview!.data.answers.map((x) => [x.label, x.value.kind === "text" ? x.value.value : x.value.kind]));
     // Questions read from the text beside the field, not "CA_36432".
-    expect(got).toMatchObject({ "Expected Salary": "25000", "Are you willing to relocate within Saudi Arabia?": "Yes", Address: "Riyadh, Saudi Arabia" });
+    expect(got).toMatchObject({ "Expected Salary": "25000", "Are you willing to relocate within Saudi Arabia?": "Yes", Address: "Riyadh, Saudi Arabia", "Do you hold a valid Saudi Iqama?": "Yes" });
     expect(Object.keys(got).some((k) => /^CA_/.test(k))).toBe(false);
 
     const ap = await autoapply.approve(db, user.id, r.previewId!);
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(workableSubmissions).toHaveLength(1);
-    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", CA_36432: "25000", CA_50967: "Yes" });
+    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", CA_36432: "25000", CA_50967: "Yes", CA_50968: "Yes" });
   }, 240_000);
 
   it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {

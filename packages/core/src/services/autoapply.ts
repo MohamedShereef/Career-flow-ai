@@ -145,8 +145,11 @@ export function numberIn(v: string): string | null {
   return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : null;
 }
 
+/** "١٢٣" / "۱۲۳" → "123", so answers typed on an Arabic keyboard fit number fields and options. */
+export const asciiDigits = (s: string) => s.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+
 function asValue(field: FormField, raw: string): AnswerValue | null {
-  const v = raw.trim();
+  const v = asciiDigits(raw).trim();
   if (!v) return null;
   if (isNumeric(field) && (field.type === "text" || field.type === "number")) {
     const n = numberIn(v);

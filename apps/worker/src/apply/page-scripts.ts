@@ -92,6 +92,8 @@ export const EXTRACT = String.raw`(() => {
     const controls = (c) => c.querySelectorAll("input:not([type=hidden]), select, textarea, [role=combobox], button[aria-haspopup]").length;
     let c = el.parentElement;
     for (let i = 0; i < 3 && c && c !== document.body && !c.matches("form") && controls(c) <= 2; i++, c = c.parentElement) {
+      const holder = [...c.querySelectorAll("input[required], select[required], textarea[required]")].find((x) => x !== el);
+      if (holder && el.getAttribute("role") === "combobox") return true;
       const marker = c.querySelector('.required, [class*="required"], [class*="mandatory"], abbr[title*="required" i]');
       if (marker && !marker.contains(el)) return true;
       const lab = c.querySelector("label, legend, [class*='label']");
@@ -100,6 +102,21 @@ export const EXTRACT = String.raw`(() => {
     return false;
   };
   const strip = (l) => clean(l.replace(/\*/g, " ").replace(/\(required\)/i, ""));
+
+  // The input that only stores a dropdown's value for the form (Workable keeps name="CA_…" next to the
+  // visible "Select an option…" box). The visible box is the field; filling the holder does nothing.
+  const valueHolder = (el) => {
+    if (el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup")) return false;
+    if (el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]')) return false;
+    if (el.getAttribute("aria-label") || el.getAttribute("aria-labelledby")) return false;
+    let c = el.parentElement;
+    for (let i = 0; i < 4 && c && c !== root; i++, c = c.parentElement) {
+      if (c.querySelectorAll("input:not([type=hidden]), select, textarea").length > 2) return false;
+      const cb = c.querySelector("[role=combobox], [aria-haspopup=listbox]");
+      if (cb && cb !== el && !cb.contains(el)) return true;
+    }
+    return false;
+  };
 
   const counts = new Map();
   const mkKey = (type, base) => {
@@ -135,7 +152,10 @@ export const EXTRACT = String.raw`(() => {
       continue;
     }
     if (t !== "file" && !vis(el)) continue;
-    if (el.readOnly && t !== "file") continue;
+    // A read-only field that opens a list (Workable "Select an option…") is a dropdown, not a fixed value.
+    const opensList = el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox";
+    if (el.readOnly && t !== "file" && !opensList) continue;
+    if (valueHolder(el)) continue;
     const raw = labelFor(el);
     const type = el.tagName === "SELECT" ? "select" : el.tagName === "TEXTAREA" ? "textarea" : t === "file" ? "file" : el.getAttribute("role") === "combobox" ? "combobox" : ["email", "tel", "url", "number", "date"].includes(t) ? t : "text";
     const key = mkKey(type, el.name || el.id || raw);
@@ -495,3 +515,21 @@ export const ENTER_SAFE = String.raw`(() => {
   if (popup && [...popup.querySelectorAll("[role=option]")].some(vis)) return true;
   return el.getAttribute("aria-expanded") === "true" && [...document.querySelectorAll("[role=option]")].some(vis);
 })()`;
+
+/** Is keyboard focus on this field (or inside its own widget / open list)? Typing anywhere else would land in another field. */
+export const FOCUS_OK = String.raw`(([key, popupId]) => {
+  const a = document.activeElement;
+  if (!a || a === document.body || a === document.documentElement) return false;
+  const el = document.querySelector('[data-cf-key="' + CSS.escape(key) + '"]');
+  if (!el) return false;
+  if (a === el || el.contains(a) || a.contains(el)) return true;
+  const pop = popupId && document.getElementById(popupId);
+  if (pop && pop.contains(a)) return true;
+  if (a.closest && a.closest("[role=listbox], [role=dialog]") && !a.matches("input, textarea, [contenteditable=true]")) return true;
+  let c = el.parentElement;
+  for (let i = 0; i < 3 && c && c !== document.body; i++, c = c.parentElement) {
+    if (c.querySelectorAll("input:not([type=hidden]), select, textarea").length > 2) break;
+    if (c.contains(a)) return true;
+  }
+  return false;
+})`;

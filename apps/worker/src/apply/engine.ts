@@ -10,7 +10,7 @@ import type { autoapply, fieldMemory } from "@careerflow/core";
 import { createHash } from "node:crypto";
 import { alternatives, bestOption } from "./match-option";
 type RescueStep = fieldMemory.RescueStep;
-import { BOT_CHECK, CHOOSE, ENTER_SAFE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, SUBMIT_GUARD, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT } from "./page-scripts";
+import { BOT_CHECK, CHOOSE, ENTER_SAFE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, SUBMIT_GUARD, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT, FOCUS_OK } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -355,6 +355,17 @@ interface Ctx {
 }
 const valueOf = (a: PlannedAnswer) => (a.value.kind === "text" ? a.value.value : "");
 
+/**
+ * Type characters only while focus is on this field (or its own widget / open list). Clicking a
+ * widget that doesn't take focus leaves it on the previous field — typing then would corrupt that
+ * field (seen live: "13112" and "SaudiArabia" ended up inside Workable's Address).
+ */
+async function typeHere(c: Pick<Ctx, "form" | "page" | "a" | "popup">, text: string, delay = 60) {
+  const ok = await c.form.evaluate(`${FOCUS_OK}(${JSON.stringify([c.a.key, c.popup])})`).catch(() => false);
+  if (!ok) throw new Error("focus isn't on this field — not typing");
+  await c.page.keyboard.type(text, { delay });
+}
+
 /** Every way we know to set a field. Each one only acts; the caller verifies the result. */
 const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
   set_files: async ({ form, page, loc, a, files }) => {
@@ -410,9 +421,10 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
   set_select: async ({ form, a }) => {
     if (!(await form.evaluate(`${SET_SELECT}(${JSON.stringify([a.key, valueOf(a)])})`))) throw new Error(`option "${valueOf(a)}" not in the list`);
   },
-  select_keyboard: async ({ form, loc, page, a }) => {
+  select_keyboard: async (c) => {
+    const { form, loc, page, a } = c;
     await loc.first().focus();
-    await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
+    await typeHere(c, valueOf(a).slice(0, 12));
     await safeEnter(form, page).catch(() => undefined);
     await page.keyboard.press("Tab").catch(() => undefined);
   },
@@ -448,13 +460,14 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
     }
   },
   // Widgets that ignore clicks on options but accept type-ahead on the focused field.
-  focus_type_enter: async ({ form, loc, page, a }) => {
+  focus_type_enter: async (c) => {
+    const { form, loc, page, a } = c;
     // For type-ahead widgets that aren't text fields (a text field gets type_pick instead).
     if (await loc.first().evaluate((e) => e.tagName === "INPUT" || e.tagName === "TEXTAREA")) throw new Error("text field: use type_pick");
     await page.keyboard.press("Escape").catch(() => undefined);
     await sleep(1200); // let any type-ahead from an earlier attempt expire
     await loc.first().focus();
-    await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
+    await typeHere(c, valueOf(a).slice(0, 12));
     if (!(await safeEnter(form, page))) throw new Error("Enter not safe here");
   },
   // Searchable lists that load options from the server on real key presses (e.g. SuccessFactors picklists).
@@ -471,7 +484,7 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
         await el.press("Backspace").catch(() => undefined);
         await el.pressSequentially(prefix, { delay: 90, ...T });
       } else {
-        await page.keyboard.type(prefix, { delay: 60 });
+        await typeHere(c, prefix);
       }
       for (let i = 0; i < 6; i++) {
         await sleep(500);
@@ -480,7 +493,8 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
     }
     throw new Error(`no option matching "${valueOf(a)}" appeared in the list`);
   },
-  arrow_enter: async ({ form, loc, page, a }) => {
+  arrow_enter: async (c) => {
+    const { form, loc, page, a } = c;
     const el = loc.first();
     await el.click(T).catch(() => el.click({ force: true, ...T }));
     if (await el.isEditable().catch(() => false)) {
@@ -488,7 +502,7 @@ const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
       await el.pressSequentially(valueOf(a), { delay: 90, ...T });
       await sleep(1200);
     } else {
-      await page.keyboard.type(valueOf(a).slice(0, 12), { delay: 60 });
+      await typeHere(c, valueOf(a).slice(0, 12));
     }
     await page.keyboard.press("ArrowDown");
     await sleep(200);
@@ -590,7 +604,7 @@ async function runSteps(c: Ctx, steps: RescueStep[]) {
       case "type_value": {
         const text = st.chars ? valueOf(c.a).slice(0, st.chars) : valueOf(c.a);
         if (await el.isEditable().catch(() => false)) await el.pressSequentially(text, { delay: 80, ...T });
-        else await c.page.keyboard.type(text, { delay: 80 });
+        else await typeHere(c, text, 80);
         break;
       }
       case "press":

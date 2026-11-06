@@ -13,6 +13,16 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
     <div class="styles--control"><input id="CA_36432" name="CA_36432" inputmode="numeric" required></div></div>
   <div class="styles--question"><span class="styles--title">Are you willing to relocate within Saudi Arabia?</span><span>*</span>
     <div class="styles--control"><input id="CA_50967" name="CA_50967" required></div></div>
+  <!-- Workable dropdown question, as on apply.workable.com: a read-only "Select an option…" box, a list it opens,
+       and a visually hidden input holding the value for the form. -->
+  <div data-ui="CA_50968" class="styles--2N29s" data-open="false" data-input-type="select">
+    <span id="CA_50968_label" class="styles--title">Do you hold a valid Saudi Iqama?<span>*</span></span>
+    <label class="styles--2bW8g"><div data-role="illustrated-input"><div class="styles--3qHIU">
+      <input id="input_CA_50968_input" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-owns="input_CA_50968_listbox" aria-controls="input_CA_50968_listbox" aria-autocomplete="list" autocomplete="off" aria-labelledby="CA_50968_label" placeholder="Select an option…" type="text" value="" readonly="true">
+    </div></div></label>
+    <input name="CA_50968" required class="sr" style="position:absolute;width:1px;height:1px;opacity:0.01;border:0;padding:0" tabindex="-1">
+    <ul id="input_CA_50968_listbox" role="listbox" class="hidden"><li role="option">Yes</li><li role="option">No</li></ul>
+  </div>
   <button type="submit">Submit application</button>
 </form>
 <script>
@@ -43,5 +53,10 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
     if (!li) return;
     ad.value = li.textContent; picked = true; list.classList.add("hidden");
   });
+  // Dropdown: opens on click; picking sets the visible box and the hidden value.
+  const cb = document.getElementById("input_CA_50968_input"), lb = document.getElementById("input_CA_50968_listbox"), hold = document.querySelector('[name="CA_50968"]');
+  cb.addEventListener("click", () => { lb.classList.remove("hidden"); cb.setAttribute("aria-expanded", "true"); });
+  lb.addEventListener("click", (e) => { const li = e.target.closest("li"); if (!li) return; cb.value = li.textContent; hold.value = li.textContent; lb.classList.add("hidden"); cb.setAttribute("aria-expanded", "false"); });
+  // Stray keys typed while focus sits elsewhere must not reach this field (would corrupt it).
   ad.addEventListener("blur", () => setTimeout(() => { if (!picked) ad.value = ""; list.classList.add("hidden"); }, 150));
 </script></body></html>`;
