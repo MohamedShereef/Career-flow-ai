@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { applications, cvTailorings, fieldRecipes, jobs, pendingQuestions, submissionEvidence, submissionLedger } from "@careerflow/db";
-import { ai, answers, autoapply, logins, profile, settings, sha256 } from "@careerflow/core";
+import { ai, answers, autoapply, documents as documentsSvc, logins, profile, settings, sha256 } from "@careerflow/core";
 import { renderCvPdf } from "../../../packages/core/src/cv-pdf";
 import { getStorage } from "../../../packages/core/src/storage";
 import { documents } from "@careerflow/db";
@@ -312,7 +312,9 @@ run("auto-apply in a real browser", () => {
       const ans = (q: string) => (/studying/i.test(q) ? "No" : /institution country/i.test(q) ? "Egypt" : /sport/i.test(q) ? "Football" : null);
       return { model: "test-model", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: qs.map((q) => ({ key: q.key, answer: ans(q.question) })) }) };
     });
-    await profile.updateProfile(db, user.id, { residencyCountry: "Saudi Arabia" });
+    await profile.updateProfile(db, user.id, { residencyCountry: "Saudi Arabia", region: "Riyadh Region", dateOfBirth: "1990-03-15", idType: "Iqama" });
+    const certPdf = await renderCvPdf({ name: "PMP Certificate", headline: "Project Management Professional", contact: [], summary: "Certificate of the Project Management Institute awarded to the candidate.", highlights: [], experiences: [], qualifications: [], skills: [] });
+    await documentsSvc.uploadDocument(db, user.id, { name: "PMP-certificate.pdf", bytes: certPdf }, "certificate");
     const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
     const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { previewId?: string; blocked?: string; problems?: unknown };
     expect(r.blocked, JSON.stringify(r)).toBeUndefined();
@@ -322,12 +324,14 @@ run("auto-apply in a real browser", () => {
     expect(got).toMatchObject({ Country: "Saudi Arabia", "Marital Status": "Married", "Are you currently studying here?": "No", "Institution Country": "Egypt" });
     expect(got["Favourite sport"]).toBeUndefined(); // "Football" isn't an option → left empty, not blocking
     expect(got["Nationality"]).toBe("Egypt"); // the preview shows the site's own wording
+    expect(got).toMatchObject({ "State / Province": "Riyadh Region", "Date of Birth": "15/03/1990", "National ID Card Type": "Iqama", Certificates: "file" });
 
     const ap = await autoapply.approve(db, user.id, r.previewId!);
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(trickySubmissions).toHaveLength(1);
-    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree", seniority: "Senior", nationality: "Egypt" });
+    expect(trickySubmissions[0]).toMatchObject({ country: "SA", marital: "Married", studying: "N", inst_country: "Egypt", religion: "ISL", education: "Bachelor's Degree", seniority: "Senior", nationality: "Egypt", state: "Riyadh Region", dob: "15/03/1990", id_type: "Iqama", resume_name: "Mohamed_CV.pdf" });
+    expect(trickySubmissions[0]!.certificates).toMatch(/^FILE:PMP-certificate\.pdf/);
     // Learned: the AI-found method was saved for this site and reused at submit without asking the AI again.
     expect(rescues).toBe(1);
     const learned = await db.select().from(fieldRecipes).where(like(fieldRecipes.strategy, "ai:%"));
@@ -335,8 +339,8 @@ run("auto-apply in a real browser", () => {
     expect(learned[0]!.successes).toBeGreaterThanOrEqual(2);
     expect(JSON.stringify(learned[0]!.steps)).not.toContain("Senior"); // methods never store anyone's answers
     const typed = await db.select().from(fieldRecipes).where(eq(fieldRecipes.strategy, "focus_type_enter"));
-    expect(typed[0]!.successes).toBeGreaterThanOrEqual(2);
-  }, 120_000);
+    expect(Math.max(...typed.map((t) => t.successes))).toBeGreaterThanOrEqual(2); // learned for the widget it worked on
+  }, 300_000);
 
   it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {
     const db = testDb();

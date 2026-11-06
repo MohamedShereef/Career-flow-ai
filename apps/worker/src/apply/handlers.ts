@@ -19,14 +19,20 @@ function nextLocalMidnight(tz: string) {
 
 async function quota(ctx: HandlerContext, userId: string, kind: "submissions" | "inspections") {
   const s = await settings.getSettings(ctx.db, userId);
-  const limit = kind === "submissions" ? s.maxSubmissionsPerDay : s.maxInspectionsPerDay;
+  const limit = settings.effectiveLimit(s, kind); // limits off → still counted, never blocks
   const ok = await settings.consumeDailyQuota(ctx.db, userId, kind, limit, settings.localDay(s.timezone));
   return { ok, resumeAt: nextLocalMidnight(s.timezone), limit };
 }
 
-async function loadFiles(ctx: HandlerContext, s: Session, app: { tailoredCvDocumentId: string | null; coverLetterDocumentId: string | null }): Promise<Files> {
+async function loadFiles(ctx: HandlerContext, s: Session, app: { userId: string; tailoredCvDocumentId: string | null; coverLetterDocumentId: string | null }): Promise<Files> {
   const get = async (id: string | null) => (id ? autoapply.loadFile(ctx.db, id).then((f) => ({ bytes: f.bytes, filename: f.doc.filename })) : null);
-  return { cv: await materialize(s, await get(app.tailoredCvDocumentId)), cover_letter: await materialize(s, await get(app.coverLetterDocumentId)) };
+  const certIds = (await ctx.db.execute(sql`SELECT id FROM documents WHERE user_id = ${app.userId} AND kind = 'certificate' AND deleted_at IS NULL ORDER BY created_at LIMIT 8`)).rows as Array<{ id: string }>;
+  const certificates = [];
+  for (const c of certIds) {
+    const f = await materialize(s, await get(c.id));
+    if (f) certificates.push(f);
+  }
+  return { cv: await materialize(s, await get(app.tailoredCvDocumentId)), cover_letter: await materialize(s, await get(app.coverLetterDocumentId)), certificates };
 }
 
 const MAX_STEPS = 12;
@@ -125,11 +131,15 @@ const prepare: Handler = async (ctx) => {
     let optional = 0;
     let steps = 1;
     const mustFill = (app.checkpointData as { mustFill?: string[] } | null)?.mustFill;
+    // Cancel / Delete pressed while this runs: stop at the next safe point, record nothing.
+    const stopped = async () => ctx.signal.aborted || (await autoapply.isStopped(ctx.db, app.id));
     for (let step = 0; ; step++) {
+      if (await stopped()) return { skipped: "cancelled by user" };
       steps = step + 1;
       fields = autoapply.applyMustFill(fields, mustFill);
       const plan = await autoapply.planAnswers(ctx.db, planCtx, { ...snapshot, fields });
       if (plan.missing.length) {
+        if (await stopped()) return { skipped: "cancelled by user" };
         await autoapply.askMissing(ctx.db, planCtx, plan.missing);
         await autoapply.recordWaitingForAnswers(ctx.db, app.id, plan.missing.length);
         return { waiting: plan.missing.length, step };
@@ -155,6 +165,7 @@ const prepare: Handler = async (ctx) => {
         await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `More than ${MAX_STEPS} steps` }, ctx.task.id);
         return { blocked: "too_many_steps" };
       }
+      if (await stopped()) return { skipped: "cancelled by user" };
       const moved = await goNext(form, page);
       if (moved.submitted) {
         await autoapply.recordUnplannedSubmit(ctx.db, app.id, moved.submitted);
@@ -169,6 +180,7 @@ const prepare: Handler = async (ctx) => {
       fields = next.fields;
     }
 
+    if (await stopped()) return { skipped: "cancelled by user" };
     const shot = await screenshot(page);
     const preview = await autoapply.savePreview(ctx.db, { applicationId: app.id, url: startUrl, atsKind: ats, answers: all, screenshot: shot, skippedOptional: optional, steps });
     const auto = await autoapply.maybeAutoApprove(ctx.db, preview.id);

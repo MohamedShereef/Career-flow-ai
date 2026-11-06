@@ -124,6 +124,39 @@ export const EXTRACT = String.raw`(() => {
     fields.push(f);
   }
 
+  // File inputs anywhere on the page (some portals keep them outside the main form).
+  for (const el of document.querySelectorAll('input[type="file"]')) {
+    if (root.contains(el) || el.disabled || el.hasAttribute("data-cf-key")) continue;
+    const dlg = el.closest("[role=dialog], .modal, [class*=dialog]");
+    if (dlg && !vis(dlg)) continue; // belongs to an upload dialog that isn't open
+
+    const raw = labelFor(el);
+    const key = mkKey("file", el.name || el.id || raw);
+    el.setAttribute("data-cf-key", key);
+    fields.push({ key, label: strip(raw), type: "file", required: isReq(el, raw), accept: el.getAttribute("accept") });
+  }
+  // Upload buttons with no visible file field (SuccessFactors "Upload a Resume", "Attach" links…).
+  const uploadRe = /^\s*(upload|attach|browse|choose file|select file|add file|add attachment|add document)\b[\s\S]{0,40}$/i;
+  // Only the button's own small container counts — never the whole form.
+  const hasFileInput = (el) => {
+    let c = el.parentElement;
+    for (let i = 0; i < 3 && c && c !== document.body && !c.matches("form"); i++, c = c.parentElement) {
+      if (c.querySelectorAll("input:not([type=hidden]), select, textarea, button").length > 4) break;
+      if (c.querySelector('input[type="file"][data-cf-key]')) return true;
+    }
+    return false;
+  };
+  for (const el of document.querySelectorAll('button, a, [role=button], input[type=button]')) {
+    const t = (el.innerText || el.value || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+    if (!t || !uploadRe.test(t) || !vis(el) || hasFileInput(el) || el.hasAttribute("data-cf-key")) continue;
+    if (el.closest('a[href]') && !/^(#|javascript)/.test(el.closest('a[href]').getAttribute("href") || "")) continue;
+    const around = near(el, 3);
+    const raw = /resume|cv|curriculum|cover|certif|transcript|degree|diploma|document|attachment/i.test(t) ? t : (around ? around + " – " + t : t);
+    const key = mkKey("file", "upload:" + raw);
+    el.setAttribute("data-cf-key", key);
+    fields.push({ key, label: strip(raw), type: "file", required: isReq(el, raw) || /resume|cv/i.test(raw), accept: null });
+  }
+
   // Custom dropdowns (Workday and others): a button that opens a listbox.
   for (const el of root.querySelectorAll('button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]:not(input)')) {
     if (!vis(el) || el.disabled || el.getAttribute("aria-disabled") === "true") continue;
@@ -172,6 +205,7 @@ export const READBACK = String.raw`((keys) => {
     const t = (el.getAttribute("type") || el.tagName).toLowerCase();
     const lab = (g) => clean((g.labels && g.labels[0] && (g.labels[0].innerText || g.labels[0].textContent)) || g.getAttribute("aria-label") || g.value);
     if (t === "file") out[key] = el.files ? [...el.files].map((f) => f.name) : [];
+    else if (el.getAttribute("data-cf-uploaded")) out[key] = el.getAttribute("data-cf-uploaded").split("|");
     else if (t === "radio") out[key] = (els.find((g) => g.checked) && lab(els.find((g) => g.checked))) || "";
     else if (t === "checkbox" && els.length === 1) out[key] = el.checked;
     else if (t === "checkbox") out[key] = els.filter((g) => g.checked).map(lab);

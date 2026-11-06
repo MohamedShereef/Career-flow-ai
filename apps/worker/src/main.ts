@@ -14,8 +14,20 @@ for (const name of ["DATABASE_URL", "APP_ENCRYPTION_KEY"]) {
 }
 
 const { db, pool } = createDb(process.env.DATABASE_URL, { max: Number(process.env.DB_POOL_MAX ?? 5) });
-const handlers = { ...baseHandlers, ...applyHandlers };
-const runner = new Runner({ db, handlers, kind: process.env.WORKER_KIND ?? "general", version: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) });
+const version = process.env.APP_VERSION ?? process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7);
+// Browser work (preparing and submitting applications) takes minutes per task, so it gets its own
+// lane: tailoring, matching, discovery and email keep running while an application is being filled.
+const { "application.prepare": prep, "application.submit": sub, "application.resume": res0, ...quickApply } = applyHandlers;
+const browserHandlers = { "application.prepare": prep!, "application.submit": sub!, "application.resume": res0! };
+const generalHandlers = { ...baseHandlers, ...quickApply };
+const runners = [
+  new Runner({ db, handlers: generalHandlers, kind: "general", version }),
+  new Runner({ db, handlers: browserHandlers, kind: "browser", version }),
+];
+const runner = {
+  health: () => ({ runners: runners.map((r) => r.health()) }),
+  workerId: runners.map((r) => r.workerId).join(","),
+};
 
 const server = createServer(async (req, res) => {
   if (req.url !== "/health") {
@@ -31,7 +43,7 @@ const server = createServer(async (req, res) => {
 });
 server.listen(Number(process.env.PORT ?? 8080), () => log("info", "worker.started", { workerId: runner.workerId, port: process.env.PORT ?? 8080 }));
 
-void runner.start();
+for (const r of runners) void r.start();
 
 let shuttingDown = false;
 async function shutdown(signal: string) {
@@ -39,7 +51,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   log("info", "worker.stopping", { signal });
   server.close();
-  await runner.stop();
+  await Promise.all(runners.map((r) => r.stop()));
   await pool.end();
   process.exit(0);
 }

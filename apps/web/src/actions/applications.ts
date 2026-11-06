@@ -45,6 +45,16 @@ export async function approveApplicationAction(_: ActionState, fd: FormData): Pr
   });
 }
 
+export async function deleteApplicationAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  return runAction(async () => {
+    await autoapply.deleteApplication(db(), user.id, str(fd, "applicationId"));
+    revalidatePath("/", "layout");
+    if (str(fd, "from") === "detail") redirect("/applications");
+    return "Deleted. You can start this job again any time.";
+  });
+}
+
 export async function cancelApplicationAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const user = await requireUser();
   return runAction(async () => {

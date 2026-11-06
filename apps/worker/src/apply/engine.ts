@@ -286,6 +286,7 @@ export async function goNext(form: Frame, page: Page): Promise<{ ok: boolean; er
 export interface Files {
   cv: { path: string; name: string } | null;
   cover_letter: { path: string; name: string } | null;
+  certificates?: Array<{ path: string; name: string }>;
 }
 
 export async function materialize(s: Session, file: { bytes: Buffer; filename: string } | null) {
@@ -356,11 +357,52 @@ const valueOf = (a: PlannedAnswer) => (a.value.kind === "text" ? a.value.value :
 
 /** Every way we know to set a field. Each one only acts; the caller verifies the result. */
 const STRATEGIES: Record<string, (c: Ctx) => Promise<void>> = {
-  set_files: async ({ loc, a, files }) => {
+  set_files: async ({ form, page, loc, a, files }) => {
     if (a.value.kind !== "file") throw new Error("not a file");
-    const f = files[a.value.doc];
-    if (!f) throw new Error("file not available");
-    await loc.first().setInputFiles(f.path, T);
+    const v = a.value;
+    const list = v.doc === "certificates" ? files.certificates ?? [] : [files[v.doc]].filter((x): x is { path: string; name: string } => !!x);
+    if (!list.length) throw new Error("file not available");
+    const el = loc.first();
+    const isInput = await el.evaluate((e) => e.tagName === "INPUT" && (e as unknown as { type: string }).type === "file").catch(() => false);
+    if (isInput) {
+      const multiple = await el.evaluate((e) => !!(e as unknown as { multiple: boolean }).multiple).catch(() => false);
+      await el.setInputFiles(multiple ? list.map((f) => f.path) : list[0]!.path, T);
+      return;
+    }
+    // An upload button: it opens the system file picker, often inside a small dialog with its own Upload/OK button.
+    const pick = page.waitForEvent("filechooser", { timeout: 3000 });
+    await el.click(T).catch(() => el.click({ force: true, ...T }));
+    let chooser = await pick.catch(() => null);
+    if (!chooser) {
+      // Some open a dialog first; its "Browse/Choose file" control opens the picker.
+      const browse = page.locator('[role=dialog] input[type=file], [role=dialog] button, [role=dialog] a').filter({ hasText: /browse|choose|select|upload/i }).first();
+      const fileIn = page.locator('[role=dialog] input[type=file]').first();
+      if (await fileIn.count()) {
+        await fileIn.setInputFiles(list.map((f) => f.path).slice(0, 1), T);
+      } else if (await browse.count()) {
+        const pick2 = page.waitForEvent("filechooser", { timeout: 8000 });
+        await browse.click(T);
+        chooser = await pick2;
+      } else throw new Error("the upload button didn't open a file picker");
+    }
+    if (chooser) await chooser.setFiles(chooser.isMultiple() ? list.map((f) => f.path) : list[0]!.path);
+    await sleep(1200);
+    // Confirm inside the dialog if it asks (this may post a form, so it's a deliberate click).
+    const confirm = page.locator("[role=dialog] button, .modal button, [class*=dialog] button").filter({ hasText: /^\s*(upload|attach|done|ok|save|continue|confirm)\s*$/i }).first();
+    if (await confirm.isVisible().catch(() => false)) {
+      await allowSubmit(page, 15_000);
+      await allowSubmit(form, 15_000);
+      await confirm.click(T);
+      await sleep(2500);
+    }
+    // Uploaded if the file's name now shows on the page.
+    const names = list.map((f) => f.name);
+    const shown = await page.evaluate((ns) => {
+      const t = document.body.innerText.toLowerCase();
+      return ns.filter((n) => t.includes(n.toLowerCase().slice(0, 18)) || t.includes(n.toLowerCase().replace(/\.[a-z0-9]+$/, "").slice(0, 18)));
+    }, names);
+    if (shown.length) await el.evaluate((e, v2) => e.setAttribute("data-cf-uploaded", v2), shown.join("|")).catch(() => undefined);
+    else throw new Error("the file name didn't appear after uploading");
   },
   select_option: async ({ loc, a }) => {
     await loc.first().selectOption({ label: valueOf(a) }, T);

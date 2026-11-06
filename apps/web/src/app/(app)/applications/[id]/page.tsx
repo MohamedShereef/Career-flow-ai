@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { AppError, autoapply } from "@careerflow/core";
 import { approveApplicationAction, cancelApplicationAction, resolveUncertainAction, retryApplicationAction, saveLoginAction, useApplyLinkAction } from "@/actions/applications";
 import { ActionForm, SubmitButton } from "@/components/forms";
+import { ApplicationControls } from "@/components/application-controls";
 import { Badge, Card, Field, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -32,7 +33,7 @@ const SOURCE: Record<string, [string, "neutral" | "brand" | "good" | "attention"
 };
 
 function show(v: autoapply.AnswerValue) {
-  if (v.kind === "file") return v.doc === "cv" ? "Tailored CV (PDF)" : "Cover letter (PDF)";
+  if (v.kind === "file") return v.doc === "cv" ? "Tailored CV (PDF)" : v.doc === "certificates" ? "Your certificates (from Profile → Documents)" : "Cover letter (PDF)";
   if (v.kind === "bool") return v.value ? "Yes (ticked)" : "No";
   if (v.kind === "multi") return v.values.join(", ");
   return v.value;
@@ -66,7 +67,7 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
       <PageHeader
         title={`${job.title} · ${job.companyName}`}
         subtitle={<>Started {fmtDate(app.createdAt)} · <a className="text-brand-600 hover:underline" href={applyUrl} target="_blank" rel="noopener">{onBoard ? `Posting on ${applyHost}` : "Employer's page"} ↗</a></>}
-        actions={<Link href="/applications" className="btn-secondary">All applications</Link>}
+        actions={<div className="flex flex-wrap items-center gap-3"><ApplicationControls app={app} from="detail" /><Link href="/applications" className="btn-secondary">All applications</Link></div>}
       />
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <Badge tone={tone}>{label}</Badge>

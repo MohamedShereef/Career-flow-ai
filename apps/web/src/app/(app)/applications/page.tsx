@@ -2,6 +2,7 @@ import Link from "next/link";
 import { desc, eq } from "drizzle-orm";
 import { applications, jobs } from "@careerflow/db";
 import { gmail } from "@careerflow/core";
+import { ApplicationControls } from "@/components/application-controls";
 import { Badge, Card, EmptyState, PageHeader, fmtDate } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -67,7 +68,7 @@ export default async function Applications({ searchParams }: { searchParams: Pro
         <div className="card overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-muted">
-              <tr><th className="px-4 py-2">Role</th><th className="px-4 py-2">Employer</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Updated</th></tr>
+              <tr><th className="px-4 py-2">Role</th><th className="px-4 py-2">Employer</th><th className="px-4 py-2">Status</th><th className="px-4 py-2">Updated</th><th className="px-4 py-2"><span className="sr-only">Actions</span></th></tr>
             </thead>
             <tbody className="divide-y divide-line">
               {filtered.map(({ a, title, company }) => {
@@ -78,6 +79,7 @@ export default async function Applications({ searchParams }: { searchParams: Pro
                     <td className="px-4 py-3">{company}</td>
                     <td className="px-4 py-3"><Badge tone={tone}>{label}</Badge></td>
                     <td className="px-4 py-3 text-muted">{fmtDate(a.updatedAt)}</td>
+                    <td className="px-4 py-3"><ApplicationControls app={a} from="list" small /></td>
                   </tr>
                 );
               })}

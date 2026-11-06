@@ -64,6 +64,20 @@
       "when": 1793860644108,
       "tag": "0008_learning",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793970428351,
+      "tag": "0009_personal_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793971884755,
+      "tag": "0010_daily_limits_switch",
+      "breakpoints": true
     }
   ]
 }

@@ -7,12 +7,12 @@ type State = { ok?: string; error?: string; at?: number } | undefined;
 
 const PendingContext = createContext<boolean | null>(null);
 
-export function SubmitButton({ children, className = "btn-primary", pendingText }: { children: ReactNode; className?: string; pendingText?: string }) {
+export function SubmitButton({ children, className = "btn-primary", pendingText, confirm }: { children: ReactNode; className?: string; pendingText?: string; confirm?: string }) {
   const ctx = useContext(PendingContext);
   const { pending: formPending } = useFormStatus();
   const pending = ctx ?? formPending;
   return (
-    <button type="submit" className={className} disabled={pending}>
+    <button type="submit" className={className} disabled={pending} onClick={confirm ? (e) => { if (!window.confirm(confirm)) e.preventDefault(); } : undefined}>
       {pending ? (pendingText ?? "Saving…") : children}
     </button>
   );

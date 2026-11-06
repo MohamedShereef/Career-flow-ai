@@ -227,6 +227,14 @@ export const applicantProfiles = pgTable(
     /** e.g. "Iqama holder – transferable", free text as the user states it. */
     residencyDetailsEnc: text("residency_details_enc"),
     city: text("city"),
+    /** Province / region (e.g. Riyadh Region). */
+    region: text("region"),
+    addressEnc: text("address_enc"),
+    postalCode: text("postal_code"),
+    dateOfBirthEnc: text("date_of_birth_enc"),
+    /** Identity document used on application forms (Iqama, Passport, National ID); number encrypted. */
+    idType: text("id_type"),
+    idNumberEnc: text("id_number_enc"),
     phoneEnc: text("phone_enc"),
     contactEmail: text("contact_email"),
     linkedinUrl: text("linkedin_url"),
@@ -825,6 +833,8 @@ export const automationSettings = pgTable(
     maxSubmissionsPerDay: integer("max_submissions_per_day").notNull().default(5),
     maxInspectionsPerDay: integer("max_inspections_per_day").notNull().default(15),
     maxBatchSize: integer("max_batch_size").notNull().default(5),
+    /** Off by default: usage is still counted (Diagnostics) but never stops work. Every submission still needs approval. */
+    dailyLimitsEnabled: boolean("daily_limits_enabled").notNull().default(false),
     manualApprovalUntilCount: integer("manual_approval_until_count").notNull().default(5),
     /** Autopilot: find, tailor and prepare applications on its own (submits still need approval until unlocked). */
     autopilotEnabled: boolean("autopilot_enabled").notNull().default(false),

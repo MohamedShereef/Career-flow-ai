@@ -39,10 +39,24 @@ export const TRICKY_HTML = String.raw`<!doctype html><html><head><title>Apply â€
     <input type="hidden" name="nationality" id="nat-val">
     <ul role="listbox" id="nat-list"></ul>
   </div>
+  <label for="st">State / Province *</label><input id="st" name="state">
+  <label for="dob">Date of Birth *</label><input id="dob" name="dob" placeholder="DD/MM/YYYY">
+  <label for="idt">National ID Card Type *</label><select id="idt" name="id_type"><option value="">No Selection</option><option>Iqama</option><option>Passport</option></select>
+  <div class="up"><span class="label">Resume *</span><button type="button" id="upbtn">Upload a Resume</button><span id="upname"></span><input type="hidden" name="resume_name" id="upval"></div>
+  <label for="certs">Certificates</label><input type="file" id="certs" name="certificates" multiple>
   <label for="hobby">Favourite sport</label><select id="hobby" name="hobby"><option value="">Selectâ€¦</option><option>Chess</option></select>
   <button type="submit">Submit Application</button>
 </form>
+<div role="dialog" id="updlg" class="hidden"><input type="file" id="upfile"><button type="button" id="upok">Upload</button></div>
 <script>
+document.getElementById("upbtn").addEventListener("click", () => document.getElementById("updlg").classList.remove("hidden"));
+document.getElementById("upok").addEventListener("click", () => {
+  const f = document.getElementById("upfile").files[0];
+  if (!f) return;
+  document.getElementById("upname").textContent = "Attached: " + f.name;
+  document.getElementById("upval").value = f.name;
+  document.getElementById("updlg").classList.add("hidden");
+});
 function renderPersonal(keep) {
   // Re-rendered from scratch (like a server round-trip): earlier values are lost.
   document.getElementById("personal").innerHTML =

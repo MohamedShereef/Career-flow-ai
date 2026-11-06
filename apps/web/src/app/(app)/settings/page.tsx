@@ -32,11 +32,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
       {tab === "automation" && (
         <div className="grid gap-6 lg:grid-cols-2">
-          <Card title="Daily limits" description="Hard ceilings the agent never exceeds, even on autopilot. They reset at midnight in your time zone.">
+          <Card title="Daily limits" description="Optional ceilings for each day (reset at midnight in your time zone). Off by default — every application still waits for your approval before it's sent.">
             <ActionForm action={saveAutomationAction} className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Final submissions per day" name="maxSubmissionsPerDay" type="number" min={0} max={settings.PILOT_LIMITS.maxSubmissionsPerDay} defaultValue={s.maxSubmissionsPerDay} hint={`Pilot maximum: ${settings.PILOT_LIMITS.maxSubmissionsPerDay}`} />
-                <Field label="Form inspections per day" name="maxInspectionsPerDay" type="number" min={0} max={settings.PILOT_LIMITS.maxInspectionsPerDay} defaultValue={s.maxInspectionsPerDay} hint={`Pilot maximum: ${settings.PILOT_LIMITS.maxInspectionsPerDay}`} />
+                <Select label="Daily limits" name="dailyLimitsEnabled" defaultValue={s.dailyLimitsEnabled ? "on" : "off"} options={[["off", "Off — no daily limit"], ["on", "On — use the numbers below"]]} />
+                <Field label="Final submissions per day" name="maxSubmissionsPerDay" type="number" min={0} max={settings.PILOT_LIMITS.maxSubmissionsPerDay} defaultValue={s.maxSubmissionsPerDay} hint={s.dailyLimitsEnabled ? `Up to ${settings.PILOT_LIMITS.maxSubmissionsPerDay}` : "Not applied while limits are off"} />
+                <Field label="Form inspections per day" name="maxInspectionsPerDay" type="number" min={0} max={settings.PILOT_LIMITS.maxInspectionsPerDay} defaultValue={s.maxInspectionsPerDay} hint={s.dailyLimitsEnabled ? `Up to ${settings.PILOT_LIMITS.maxInspectionsPerDay}` : "Not applied while limits are off"} />
                 <Field label="Jobs per batch" name="maxBatchSize" type="number" min={1} max={settings.PILOT_LIMITS.maxBatchSize} defaultValue={s.maxBatchSize} />
                 <Field label="Match threshold (%)" name="matchThreshold" type="number" min={0} max={100} defaultValue={s.matchThreshold} hint="Jobs scoring below this are not recommended." />
                 <Field label="Discover new jobs every (hours)" name="discoveryIntervalHours" type="number" min={1} max={168} defaultValue={s.discoveryIntervalHours} />

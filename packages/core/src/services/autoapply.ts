@@ -79,7 +79,7 @@ export interface FormSnapshot {
   blockers: Blocker[];
 }
 
-export type AnswerValue = { kind: "text"; value: string } | { kind: "bool"; value: boolean } | { kind: "multi"; values: string[] } | { kind: "file"; doc: "cv" | "cover_letter" };
+export type AnswerValue = { kind: "text"; value: string } | { kind: "bool"; value: boolean } | { kind: "multi"; values: string[] } | { kind: "file"; doc: "cv" | "cover_letter" | "certificates" };
 
 export type AnswerSource = "profile" | "saved_answer" | "ai" | "document";
 
@@ -102,6 +102,17 @@ export interface Plan {
 
 /** Never answered by AI and never guessed: asked once in the inbox, then reused. */
 const ASK_ONCE = /\b(authori[sz]ed|authori[sz]ation|eligible to work|right to work|sponsor|visa|work permit|iqama|transferable|relocat|notice period|start date|available to start|consent|agree|acknowledge|privacy|terms|gdpr|data protection|reference|referee|how did you hear|source|referred|institute|institution|university|college|school|graduation|graduated|gpa|g p a|cgpa|grade|out of|major|field of study|specialization|national id|id card|id type|id number)\b/;
+
+/** Format an ISO date the way the field asks (placeholder like DD/MM/YYYY or MM/DD/YYYY; ISO for date inputs). */
+export function formatDate(iso: string, hint: string) {
+  const [y, m, d] = iso.split("-");
+  const h = hint.toLowerCase();
+  if (/iso|yyyy-mm-dd/.test(h)) return iso;
+  if (/mm\/dd\/yyyy|m\/d\/y/.test(h)) return `${m}/${d}/${y}`;
+  if (/dd\.mm\.yyyy/.test(h)) return `${d}.${m}.${y}`;
+  if (/dd-mm-yyyy/.test(h)) return `${d}-${m}-${y}`;
+  return `${d}/${m}/${y}`; // the common format on Gulf portals when nothing is stated
+}
 
 /** Fields that only accept a number. */
 const isNumeric = (f: FormField) => f.type === "number" || /\ba number\b/.test(f.hint ?? "") || /\b(g ?p ?a|cgpa|grade point|out of|percentage|percent|score)\b/.test(norm(f.label));
@@ -158,6 +169,7 @@ interface PlanContext {
   job: { id: string; title: string; companyName: string; description: string | null };
   hasCoverLetter: boolean;
   coverLetterText: string | null;
+  certificateCount?: number;
 }
 
 const AI_SCHEMA = js.obj({
@@ -199,16 +211,23 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
   // label pattern → profile value. "personal" rules describe the candidate themself, so they must not
   // fire on fields about something else ("Institution Country", "Employer City", "Reference Phone"…).
   const ABOUT_SOMETHING_ELSE = /\b(institution|school|university|college|education|degree|major|employer|company|organi[sz]ation|previous|former|birth|born|issu(e|ed|ing)|passport|reference|referee|emergency|spouse|father|mother|guardian|manager|supervisor|recruiter|agency)\b/;
-  const PROFILE_RULES: Array<[RegExp, string | null | undefined, "personal" | "work"]> = [
+  const dob = p.dateOfBirth ? formatDate(p.dateOfBirth, "") : null;
+  const PROFILE_RULES: Array<[RegExp, string | null | undefined, "personal" | "work" | "dob" | "secret"]> = [
+    [/\b(date of birth|birth ?date|dob|birthday)\b/, dob, "dob"],
+    [/\b(id|identification|identity) (card |document )?type\b|\btype of (id|identification|identity)\b/, p.idType, "personal"],
+    [/\b(national id|iqama|id|identification|identity|passport|civil id) (card )?(number|no)\b/, p.idNumber, "secret"],
     [/\b(first|given|fore) ?names?\b|\bgiven name\(s\)/, first, "personal"],
     [/\b(last|family|sur) ?name\b|\bsurname\b/, last, "personal"],
     [/^(full )?name$|\bfull name\b|\byour name\b|\blegal name\b/, p.fullName, "personal"],
+    [/\b(state|province|region|emirate|governorate)\b/, p.region, "personal"],
     [/\be ?mail\b/, p.contactEmail ?? ctx.userEmail, "personal"],
     [/\b(phone|mobile|telephone|cell|whatsapp)\b/, p.phone, "personal"],
     [/\blinked ?in\b/, p.linkedinUrl, "personal"],
     [/^(current )?(city|location)$|\b(current|home|residence) (city|location)\b|\bwhere are you (based|located)\b|^city of residence$/, p.city, "personal"],
     [/^country$|\bcountry of residence\b|\bresidence country\b|\bcurrent country\b|\bcountry you live\b/, p.residencyCountry, "personal"],
     [/^nationality$|\bnationality\b|\bcitizenship\b/, p.nationality, "personal"],
+    [/\b(postal|zip|post) ?code\b|\bpostcode\b|\bpo box\b/, p.postalCode, "personal"],
+    [/^address$|\b(street|home|residential|mailing|current) address\b|\baddress line ?1?\b|^address 1$/, p.address, "personal"],
     [/\b(current|most recent|present) (company|employer|organi[sz]ation)\b/, current?.employer, "work"],
     [/\b(current|most recent|present) (job )?(title|position|role|designation)\b|^job title$|^headline$/, current?.title ?? p.headline, "work"],
     [/\byears of (relevant |total |professional )?experience\b|\bhow many years\b/, p.yearsExperience != null ? String(p.yearsExperience) : null, "work"],
@@ -226,8 +245,11 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
     const sensitivity = answersSvc.classifySensitivity(f.label);
 
     if (f.type === "file") {
-      if (isResume(l) || (!isCoverLetter(l) && !answers.some((a) => a.value.kind === "file" && a.value.doc === "cv"))) {
+      const certLike = /\b(certificat|certification|transcript|degree|diploma|qualification|supporting|additional document|other document)/.test(l);
+      if (isResume(l) || (!isCoverLetter(l) && !certLike && !answers.some((a) => a.value.kind === "file" && a.value.doc === "cv"))) {
         answers.push({ key: f.key, label: f.label, type: f.type, value: { kind: "file", doc: "cv" }, source: "document", needsReview: false });
+      } else if (/\b(certificat|certification|transcript|degree|diploma|qualification|supporting|attachment|additional document|other document)/.test(l) && (ctx.certificateCount ?? 0) > 0) {
+        answers.push({ key: f.key, label: f.label, type: f.type, value: { kind: "file", doc: "certificates" }, source: "document", needsReview: false });
       } else if (isCoverLetter(l) && ctx.hasCoverLetter) {
         answers.push({ key: f.key, label: f.label, type: f.type, value: { kind: "file", doc: "cover_letter" }, source: "document", needsReview: false });
       } else if (f.required) missing.push(f);
@@ -256,11 +278,13 @@ export async function planAnswers(db: Db, ctx: PlanContext, snapshot: FormSnapsh
     }
 
     // 2) a standard field filled from the profile
-    const rule = PROFILE_RULES.find(([re, , kind]) => re.test(l) && !(kind === "personal" && ABOUT_SOMETHING_ELSE.test(l)));
+    const rule = PROFILE_RULES.find(([re, , kind]) => re.test(l) && !((kind === "personal" || kind === "secret") && ABOUT_SOMETHING_ELSE.test(l)));
     if (rule && rule[1] && !rejected) {
-      const v = asValue(f, rule[1]);
+      const raw = rule[2] === "dob" && p.dateOfBirth ? formatDate(p.dateOfBirth, `${f.type === "date" ? "iso" : ""} ${f.hint ?? ""}`) : rule[1];
+      const v = asValue(f, raw);
       if (v) {
-        answers.push({ key: f.key, label: f.label, type: f.type, value: v, source: "profile", needsReview: false });
+        // An ID number is always shown to you before sending, even under autopilot.
+        answers.push({ key: f.key, label: f.label, type: f.type, value: v, source: "profile", needsReview: rule[2] === "secret" });
         continue;
       }
     }
@@ -538,6 +562,7 @@ export async function loadContext(db: Db, applicationId: string) {
     job: { id: row.j.id, title: row.j.title, companyName: row.j.companyName, description: row.j.description },
     hasCoverLetter: !!row.a.coverLetterDocumentId,
     coverLetterText: letter ? `Dear Hiring Team,\n\n${letter}` : null,
+    certificateCount: Number((await db.execute(sql`SELECT count(*)::int AS n FROM documents WHERE user_id = ${row.a.userId} AND kind = 'certificate' AND deleted_at IS NULL`)).rows[0]?.n ?? 0),
   };
   return { app: row.a, job: row.j, tailoring: t ?? null, ctx };
 }
@@ -558,7 +583,7 @@ const ERROR_TEXT: Record<Blocker["kind"], string> = {
 
 export async function recordBlocker(db: Db, applicationId: string, b: Blocker, taskId?: string, screenshot?: Buffer | null) {
   const [a] = await db.select().from(applications).where(eq(applications.id, applicationId));
-  if (!a) return;
+  if (!a || a.status === "withdrawn") return;
   const shot = screenshot ? await storeFile(db, a.userId, "evidence_screenshot", screenshot, "image/png", "where-it-stopped.png", "Form where CareerFlow stopped") : null;
   const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch", job_board: "unsupported_ats", login_failed: "login_required", verification_required: "login_required" } as const)[b.kind];
   const [err] = await db
@@ -573,7 +598,7 @@ export async function recordBlocker(db: Db, applicationId: string, b: Blocker, t
 
 export async function recordWaitingForAnswers(db: Db, applicationId: string, count: number) {
   const [a] = await db.select().from(applications).where(eq(applications.id, applicationId));
-  if (!a) return;
+  if (!a || a.status === "withdrawn") return;
   const msg = `The employer asks ${count} question${count === 1 ? "" : "s"} only you can answer. Answer ${count === 1 ? "it" : "them"} in Profile → Questions and the application continues automatically.`;
   await db.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "waiting_answers", updatedAt: new Date() }).where(eq(applications.id, applicationId));
   await event(db, a.userId, applicationId, "status_change", "prepare", msg);
@@ -768,8 +793,15 @@ export async function recordOutcome(
       await tx.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "form_rejected", checkpointData: { ...cp(app.checkpointData), mustFill, rejected }, lastErrorId: err!.id, updatedAt: now }).where(eq(applications.id, app.id));
       await event(tx, app.userId, app.id, "error", "submit", msg, shot ? { screenshotDocumentId: shot.id, invalid: input.invalid ?? [] } : { invalid: input.invalid ?? [] });
       // Prepare again right away so the questions reach the user now (it still waits for approval before sending).
-      if ((input.invalid ?? []).length) {
+      // Only when the site flagged something new, and at most 3 times in a row — never an endless loop.
+      const autoRetries = Number(cp(app.checkpointData).autoRetries ?? 0);
+      const somethingNew = (input.invalid ?? []).some((f) => f.label && !prevRejected[f.label.toLowerCase()]);
+      if (!somethingNew || autoRetries >= 3) {
+        const stop = "The employer's form keeps refusing the same fields. Nothing was sent. Check the answers in Profile → Questions (the site's accepted values are shown there), then press Retry.";
+        await tx.update(applications).set({ statusReason: `${msg.split(". CareerFlow")[0]}. ${stop}` }).where(eq(applications.id, app.id));
+      } else {
         await tx.update(applications).set({ status: "processing", checkpoint: "queued_prepare" }).where(eq(applications.id, app.id));
+        await tx.update(applications).set({ checkpointData: { ...cp(app.checkpointData), mustFill, rejected, autoRetries: autoRetries + 1 } }).where(eq(applications.id, app.id));
         await queue.enqueue(tx, { kind: "application.prepare", userId: app.userId, payload: { applicationId: app.id }, dedupeKey: `apply:prepare:${app.id}`, runAt: new Date(Date.now() + 30_000), maxAttempts: 2, timeoutSeconds: 900 });
       }
     } else {
@@ -804,9 +836,47 @@ export async function cancel(db: Db, userId: string, applicationId: string) {
   if (["submitted_unverified", "confirmed_by_email", "interview"].includes(a.status) || a.checkpoint === "uncertain") throw new AppError("cannot_cancel", "This application was already sent.");
   await db.update(approvals).set({ invalidatedAt: new Date(), invalidatedReason: "cancelled" }).where(and(eq(approvals.applicationId, a.id), isNull(approvals.consumedAt), isNull(approvals.invalidatedAt)));
   await db.update(applications).set({ status: "withdrawn", statusReason: "Cancelled by you.", checkpoint: "cancelled", updatedAt: new Date() }).where(eq(applications.id, a.id));
-  await db.execute(sql`UPDATE tasks SET status = 'cancelled', finished_at = now() WHERE status = 'queued' AND kind IN ('application.prepare','application.submit') AND payload->>'applicationId' = ${a.id}`);
+  await stopTasks(db, a.id);
   await event(db, userId, a.id, "user_action", "cancel", "You cancelled this application.");
   await feedback.record(db, userId, a.jobId, "cancelled");
+}
+
+/**
+ * Stops queued and running work for an application. Running tasks lose their
+ * lease (the worker notices on its next heartbeat) and anything they still try
+ * to record is ignored because the application is no longer active. A running
+ * final submit is never interrupted: once Submit may have been pressed the
+ * outcome must be recorded.
+ */
+async function stopTasks(db: Executor, applicationId: string) {
+  await db.execute(sql`
+    UPDATE tasks SET status = 'cancelled', finished_at = now(), last_error = coalesce(last_error, '') || ' [cancelled by user]'
+    WHERE kind IN ('application.prepare', 'application.resume', 'application.submit') AND payload->>'applicationId' = ${applicationId}
+      AND (status = 'queued' OR (status = 'running' AND kind <> 'application.submit'))`);
+}
+
+/** True when the user cancelled or deleted the application while work was running. */
+export async function isStopped(db: Executor, applicationId: string) {
+  const [a] = await db.select({ status: applications.status }).from(applications).where(eq(applications.id, applicationId));
+  return !a || a.status === "withdrawn";
+}
+
+/**
+ * Removes an application that was never sent, so the job can be started fresh
+ * later. The submission ledger keeps its row (with the link cleared), so a job
+ * that was ever submitted can still never be sent twice.
+ */
+export async function deleteApplication(db: Db, userId: string, applicationId: string) {
+  const { app, job } = await loadContext(db, applicationId).catch(() => ({ app: null, job: null }));
+  if (!app || !job || app.userId !== userId) throw notFound("Application");
+  const [ledger] = await db.select({ state: submissionLedger.state }).from(submissionLedger).where(and(eq(submissionLedger.userId, userId), eq(submissionLedger.jobDedupeKey, job.dedupeKey)));
+  const sent = ["submitted_unverified", "confirmed_by_email", "interview", "rejected"].includes(app.status) || app.checkpoint === "uncertain" || app.checkpoint === "submitting";
+  if (sent || (ledger && ledger.state !== "abandoned")) throw new AppError("cannot_delete", "This application was sent (or may have been sent), so it stays in your history.");
+  const [busy] = (await db.execute(sql`SELECT 1 FROM tasks WHERE kind = 'application.submit' AND status = 'running' AND payload->>'applicationId' = ${app.id} LIMIT 1`)).rows;
+  if (busy) throw new AppError("cannot_delete", "It's being submitted right now — wait a minute and check the result.");
+  await stopTasks(db, app.id);
+  await db.delete(applications).where(and(eq(applications.id, app.id), eq(applications.userId, userId)));
+  await audit(db, { userId, actor: "user", action: "application.deleted", metadata: { applicationId: app.id, jobId: app.jobId } });
 }
 
 // ───────────────────────── Reading ─────────────────────────
@@ -936,6 +1006,7 @@ export async function reconcileInterruptedSubmits(db: Db) {
 /** How many applications autopilot may still start today (each one tailors a CV with AI). */
 export async function autopilotStartsLeft(db: Executor, userId: string) {
   const s = await getSettings(db, userId);
+  if (!s.dailyLimitsEnabled) return Number.POSITIVE_INFINITY; // the hourly batch size still paces autopilot
   const day = localDayStart(s.timezone);
   const [r] = await db
     .select({ n: sql<number>`count(*)::int` })

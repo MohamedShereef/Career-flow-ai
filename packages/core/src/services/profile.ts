@@ -22,6 +22,12 @@ export const profileUpdateSchema = z
     residencyCountry: z.string().trim().max(80).nullable(),
     residencyDetails: z.string().trim().max(300).nullable(),
     city: z.string().trim().max(100).nullable(),
+    region: z.string().trim().max(100).nullable(),
+    address: z.string().trim().max(300).nullable(),
+    postalCode: z.string().trim().max(20).nullable(),
+    dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use the date picker").nullable(),
+    idType: z.enum(["Iqama", "Passport", "National ID", "GCC ID"]).nullable(),
+    idNumber: z.string().trim().max(40).nullable(),
     phone: z.string().trim().max(40).nullable(),
     contactEmail: z.string().trim().email().max(254).nullable(),
     linkedinUrl: z.string().trim().url().max(300).nullable(),
@@ -50,7 +56,7 @@ export type ProfileUpdate = z.infer<typeof profileUpdateSchema>;
 export async function getProfile(db: Executor, userId: string) {
   const [p] = await db.select().from(applicantProfiles).where(eq(applicantProfiles.userId, userId));
   if (!p) throw notFound("Profile");
-  const { phoneEnc, currentSalaryEnc, expectedSalaryEnc, residencyDetailsEnc, ...rest } = p;
+  const { phoneEnc, currentSalaryEnc, expectedSalaryEnc, residencyDetailsEnc, addressEnc, dateOfBirthEnc, idNumberEnc, ...rest } = p;
   return {
     ...rest,
     yearsExperience: rest.yearsExperience === null ? null : Number(rest.yearsExperience),
@@ -58,6 +64,9 @@ export async function getProfile(db: Executor, userId: string) {
     currentSalary: decryptNullable(currentSalaryEnc, aad(userId, "current_salary")),
     expectedSalary: decryptNullable(expectedSalaryEnc, aad(userId, "expected_salary")),
     residencyDetails: decryptNullable(residencyDetailsEnc, aad(userId, "residency")),
+    address: decryptNullable(addressEnc, aad(userId, "address")),
+    dateOfBirth: decryptNullable(dateOfBirthEnc, aad(userId, "dob")),
+    idNumber: decryptNullable(idNumberEnc, aad(userId, "id_number")),
   };
 }
 export type Profile = Awaited<ReturnType<typeof getProfile>>;
@@ -69,12 +78,15 @@ export async function updateProfile(db: Db, userId: string, input: unknown) {
     throw new AppError("invalid_profile", `Check the field “${issue?.path.join(".")}”: ${issue?.message}`);
   }
   const d = parsed.data;
-  const { phone, currentSalary, expectedSalary, residencyDetails, yearsExperience, ...plain } = d;
+  const { phone, currentSalary, expectedSalary, residencyDetails, yearsExperience, address, dateOfBirth, idNumber, ...plain } = d;
   const values: Partial<typeof applicantProfiles.$inferInsert> = { ...plain, updatedAt: new Date() };
   if ("phone" in d) values.phoneEnc = encryptNullable(phone, aad(userId, "phone"));
   if ("currentSalary" in d) values.currentSalaryEnc = encryptNullable(currentSalary, aad(userId, "current_salary"));
   if ("expectedSalary" in d) values.expectedSalaryEnc = encryptNullable(expectedSalary, aad(userId, "expected_salary"));
   if ("residencyDetails" in d) values.residencyDetailsEnc = encryptNullable(residencyDetails, aad(userId, "residency"));
+  if ("address" in d) values.addressEnc = encryptNullable(address, aad(userId, "address"));
+  if ("dateOfBirth" in d) values.dateOfBirthEnc = encryptNullable(dateOfBirth, aad(userId, "dob"));
+  if ("idNumber" in d) values.idNumberEnc = encryptNullable(idNumber, aad(userId, "id_number"));
   if ("yearsExperience" in d) values.yearsExperience = yearsExperience === null || yearsExperience === undefined ? null : String(yearsExperience);
 
   await db

@@ -190,3 +190,78 @@ describe("answers the employer's form rejected", () => {
     expect(Object.fromEntries(plan.answers.map((a) => [a.key, a.value]))).toEqual({ "t:gpa": { kind: "text", value: "3.2" }, "c:idtype": { kind: "text", value: "Iqama" } });
   });
 });
+
+describe("cancel and delete", () => {
+  it("stops queued and running preparation, deletes only unsent applications, and keeps the never-twice ledger", async () => {
+    const { applications, jobs, submissionLedger, tasks } = await import("@careerflow/db");
+    const { eq, sql } = await import("drizzle-orm");
+    const { user } = await makeUser();
+    const db = testDb();
+    const mkJob = async () => (await db.insert(jobs).values({ externalId: crypto.randomUUID(), dedupeKey: crypto.randomUUID(), title: "Buyer", companyName: "Acme", employerKey: "acme", sourceUrl: "https://x", applyUrl: "https://x" }).returning())[0]!;
+
+    // An application being prepared: Cancel stops its tasks (even the running one) and records nothing more.
+    const j1 = await mkJob();
+    const [a1] = await db.insert(applications).values({ userId: user.id, jobId: j1.id, employerKey: "acme", status: "processing" }).returning();
+    await db.insert(tasks).values([
+      { kind: "application.prepare", payload: { applicationId: a1!.id }, status: "running", lockedBy: "w1" },
+      { kind: "application.prepare", payload: { applicationId: a1!.id }, status: "queued" },
+    ]);
+    await autoapply.cancel(db, user.id, a1!.id);
+    const left = (await db.execute(sql`SELECT status FROM tasks WHERE payload->>'applicationId' = ${a1!.id}`)).rows as Array<{ status: string }>;
+    expect(left.map((t) => t.status)).toEqual(["cancelled", "cancelled"]);
+    expect(await autoapply.isStopped(db, a1!.id)).toBe(true);
+    await autoapply.recordWaitingForAnswers(db, a1!.id, 2); // a late write from the stopped task is ignored
+    expect((await db.select().from(applications).where(eq(applications.id, a1!.id)))[0]!.status).toBe("withdrawn");
+
+    // Delete removes it, so the job can be started fresh.
+    await autoapply.deleteApplication(db, user.id, a1!.id);
+    expect(await db.select().from(applications).where(eq(applications.id, a1!.id))).toHaveLength(0);
+    expect(await autoapply.isStopped(db, a1!.id)).toBe(true);
+
+    // Something sent (or maybe sent) can't be deleted; another user can't delete yours.
+    const j2 = await mkJob();
+    const [a2] = await db.insert(applications).values({ userId: user.id, jobId: j2.id, employerKey: "acme", status: "submitted_unverified" }).returning();
+    await expect(autoapply.deleteApplication(db, user.id, a2!.id)).rejects.toMatchObject({ code: "cannot_delete" });
+    const j3 = await mkJob();
+    const [a3] = await db.insert(applications).values({ userId: user.id, jobId: j3.id, employerKey: "acme", status: "needs_user_action" }).returning();
+    await db.insert(submissionLedger).values({ userId: user.id, jobDedupeKey: j3.dedupeKey, employerKey: "acme", applicationId: a3!.id, state: "submitted" });
+    await expect(autoapply.deleteApplication(db, user.id, a3!.id)).rejects.toMatchObject({ code: "cannot_delete" });
+    const other = await makeUser("other");
+    const j4 = await mkJob();
+    const [a4] = await db.insert(applications).values({ userId: user.id, jobId: j4.id, employerKey: "acme", status: "needs_user_action" }).returning();
+    await expect(autoapply.deleteApplication(db, other.user.id, a4!.id)).rejects.toMatchObject({ code: "not_found" });
+
+    // A form rejected before: its ledger row survives deletion (link cleared), state stays "abandoned".
+    const j5 = await mkJob();
+    const [a5] = await db.insert(applications).values({ userId: user.id, jobId: j5.id, employerKey: "acme", status: "needs_user_action" }).returning();
+    await db.insert(submissionLedger).values({ userId: user.id, jobDedupeKey: j5.dedupeKey, employerKey: "acme", applicationId: a5!.id, state: "abandoned" });
+    await autoapply.deleteApplication(db, user.id, a5!.id);
+    const [l5] = await db.select().from(submissionLedger).where(eq(submissionLedger.jobDedupeKey, j5.dedupeKey));
+    expect(l5).toMatchObject({ applicationId: null, state: "abandoned" });
+  });
+});
+
+describe("form rejections never loop", () => {
+  it("prepares again only when the site flags something new, and at most 3 times in a row", async () => {
+    const { applications, jobs } = await import("@careerflow/db");
+    const { eq } = await import("drizzle-orm");
+    const { user } = await makeUser();
+    const db = testDb();
+    const [job] = await db.insert(jobs).values({ externalId: crypto.randomUUID(), dedupeKey: crypto.randomUUID(), title: "Buyer", companyName: "Acme", employerKey: "acme", sourceUrl: "https://x", applyUrl: "https://x" }).returning();
+    const [app] = await db.insert(applications).values({ userId: user.id, jobId: job!.id, employerKey: "acme", status: "processing" }).returning();
+    const reject = (...labels: string[]) =>
+      autoapply.recordOutcome(db, { applicationId: app!.id, approvalId: crypto.randomUUID(), outcome: "not_submitted", url: "https://x", summary: "", errors: labels.map((l) => `${l} is required`), invalid: labels.map((l) => ({ key: null, label: l, message: "required" })) });
+    const state = async () => (await db.select().from(applications).where(eq(applications.id, app!.id)))[0]!;
+
+    await reject("Institute");
+    expect((await state()).status).toBe("processing"); // new field → asked and prepared again
+    await reject("Institute");
+    const s = await state();
+    expect(s.status).toBe("needs_user_action"); // same field refused again → stop and tell the user
+    expect(s.statusReason).toMatch(/keeps refusing the same fields/);
+    await reject("G.P.A");
+    await reject("State");
+    await reject("ID Type");
+    expect((await state()).status).toBe("needs_user_action"); // 3 automatic tries used → waits for Retry
+  });
+});

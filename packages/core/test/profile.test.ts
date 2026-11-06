@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { applicantProfiles } from "@careerflow/db";
 import * as profile from "../src/services/profile";
 import * as settings from "../src/services/settings";
@@ -62,7 +62,19 @@ describe("applicant profile", () => {
   it("enforces pilot limits and atomic daily quotas", async () => {
     const { user } = await makeUser();
     const db = testDb();
-    await expect(settings.updateSettings(db, user.id, { maxSubmissionsPerDay: 50 })).rejects.toMatchObject({ code: "invalid_settings" });
+    await expect(settings.updateSettings(db, user.id, { maxSubmissionsPerDay: 51 })).rejects.toMatchObject({ code: "invalid_settings" });
+    const s0 = await settings.getSettings(db, user.id);
+    expect(s0.dailyLimitsEnabled).toBe(false); // off by default: counted, never blocking
+    expect(settings.effectiveLimit(s0, "inspections")).toBe(Number.POSITIVE_INFINITY);
+    expect(await settings.consumeDailyQuota(db, user.id, "inspections", Infinity, "2026-11-05")).toBe(true);
+    expect((await settings.todayUsage(db, user.id, "2026-11-05")).inspections).toBe(1); // still counted
+    await settings.updateSettings(db, user.id, { dailyLimitsEnabled: "on", maxInspectionsPerDay: 15 });
+    expect(settings.effectiveLimit(await settings.getSettings(db, user.id), "inspections")).toBe(15);
+    // Switching off brings forward work that was waiting for tomorrow.
+    await db.execute(sql`INSERT INTO tasks (user_id, kind, payload, run_at) VALUES (${user.id}, 'application.prepare', '{}', now() + interval '10 hours')`);
+    await settings.updateSettings(db, user.id, { dailyLimitsEnabled: false });
+    const [t] = (await db.execute(sql`SELECT run_at <= now() AS due FROM tasks WHERE user_id = ${user.id}`)).rows as Array<{ due: boolean }>;
+    expect(t!.due).toBe(true);
     const results = await Promise.all(Array.from({ length: 12 }, () => settings.consumeDailyQuota(db, user.id, "submissions", 5, "2026-11-04")));
     expect(results.filter(Boolean)).toHaveLength(5);
   });
