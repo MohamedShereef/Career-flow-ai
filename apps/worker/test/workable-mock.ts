@@ -9,7 +9,11 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
     <div class="styles--phone"><button type="button" aria-label="Country">🇸🇦 +966</button><input id="phone" name="phone" type="tel" required></div></div>
   <div id="addr-box"><label id="lab-a" for="address">Address *</label><input id="address" name="address" autocomplete="off" required>
     <ul id="addr-sugg" class="sugg hidden" role="listbox"></ul></div>
-  <div id="zip-box"><label id="lab-z" for="postal_code">Postal code *</label><input id="postal_code" name="postal_code" required></div>
+  <!-- As on Workable: address parts the page fills itself, hidden from people. Whatever is typed in them is
+       appended to Address when you leave them. -->
+  <div><span>City</span><input id="city" aria-hidden="true" tabindex="-1" name="city" type="text" style="width:42px"></div>
+  <div><span>Postcode</span><input id="postcode" aria-hidden="true" tabindex="-1" name="postcode" type="text" style="width:42px"></div>
+  <div><span>Country</span><input id="country" aria-hidden="true" tabindex="-1" name="country" type="text" style="width:42px"></div>
   <div class="styles--question"><span class="styles--title">Expected Salary</span><span>*</span>
     <div class="styles--control"><input id="CA_36432" name="CA_36432" inputmode="numeric" required></div></div>
   <div class="styles--question"><span class="styles--title">Are you willing to relocate within Saudi Arabia?</span><span>*</span>
@@ -42,7 +46,7 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
   // form below "re-renders" by reusing DOM nodes (as React does).
   const list = document.getElementById("addr-sugg");
   const adr = () => document.getElementById("address");
-  let picked = false, swapped = false;
+  let picked = false;
   document.addEventListener("input", (e) => {
     if (e.target.id !== "address") return;
     picked = false;
@@ -56,16 +60,13 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
     const li = e.target.closest("li");
     if (!li) return;
     adr().value = li.textContent; picked = true; list.classList.add("hidden");
-    // Re-render after the address is chosen: the same two <input> nodes swap roles (and their values move with them).
-    if (!swapped) setTimeout(() => {
-      swapped = true;
-      const a = document.querySelector("#addr-box input"), z = document.querySelector("#zip-box input");
-      const av = a.value, zv = z.value;
-      a.id = "postal_code"; a.name = "postal_code"; z.id = "address"; z.name = "address";
-      document.getElementById("addr-box").appendChild(z); document.getElementById("zip-box").appendChild(a);
-      a.value = zv; z.value = av;
-    }, 50);
   });
+  for (const id of ["city", "postcode", "country"]) {
+    const part = document.getElementById(id);
+    let typed = [];
+    part.addEventListener("input", () => typed.push(part.value));
+    part.addEventListener("blur", () => { if (typed.length) adr().value = [adr().value, ...typed].filter(Boolean).join(", "); typed = []; });
+  }
   document.addEventListener("focusout", (e) => { if (e.target.id === "address") setTimeout(() => { if (!picked) adr().value = ""; list.classList.add("hidden"); }, 150); });
   // Dropdown: opens on click; picking sets the visible box and the hidden value.
   const cb = document.getElementById("input_CA_50968_input"), lb = document.getElementById("input_CA_50968_listbox"), hold = document.querySelector('[name="CA_50968"]');

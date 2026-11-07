@@ -118,6 +118,15 @@ export const EXTRACT = String.raw`(() => {
     return false;
   };
 
+  // Inputs the site hides from people and fills itself (Workable's city / postcode / country next to
+  // Address: aria-hidden, tabindex -1). Typing into them is never what a person would do — on Workable
+  // every value typed there is appended to the Address.
+  const machineOnly = (el) => {
+    if (el.closest("[aria-hidden=true]")) return true;
+    if (el.getAttribute("tabindex") === "-1" && !(el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]')) && !el.getAttribute("aria-label") && !el.getAttribute("aria-labelledby")) return true;
+    return false;
+  };
+
   const counts = new Map();
   const mkKey = (type, base) => {
     const k = type + ":" + clean(String(base)).toLowerCase().slice(0, 80);
@@ -159,7 +168,7 @@ export const EXTRACT = String.raw`(() => {
     // A read-only field that opens a list (Workable "Select an option…") is a dropdown, not a fixed value.
     const opensList = el.getAttribute("role") === "combobox" || el.getAttribute("aria-haspopup") === "listbox";
     if (el.readOnly && t !== "file" && !opensList) continue;
-    if (valueHolder(el)) continue;
+    if (valueHolder(el) || machineOnly(el)) continue;
     const raw = labelFor(el);
     const type = el.tagName === "SELECT" ? "select" : el.tagName === "TEXTAREA" ? "textarea" : t === "file" ? "file" : el.getAttribute("role") === "combobox" ? "combobox" : ["email", "tel", "url", "number", "date"].includes(t) ? t : "text";
     const key = mkKey(type, el.name || el.id || raw);

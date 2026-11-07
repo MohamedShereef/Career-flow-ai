@@ -387,7 +387,7 @@ run("auto-apply in a real browser", () => {
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(workableSubmissions).toHaveLength(1);
-    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", postal_code: "13112", CA_36432: "25000", CA_50967: "Yes", CA_50968: "Yes" });
+    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", postcode: "", country: "", CA_36432: "25000", CA_50967: "Yes", CA_50968: "Yes" });
   }, 240_000);
 
   it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {
