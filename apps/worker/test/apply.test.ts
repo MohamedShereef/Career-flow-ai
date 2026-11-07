@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, like } from "drizzle-orm";
-import { applications, cvTailorings, fieldRecipes, jobs, pendingQuestions, submissionEvidence, submissionLedger } from "@careerflow/db";
+import { applications, cvTailorings, fieldRecipes, jobs, pendingQuestions, submissionEvidence, submissionLedger, tasks } from "@careerflow/db";
 import { ai, answers, autoapply, documents as documentsSvc, logins, profile, settings, sha256 } from "@careerflow/core";
 import { renderCvPdf } from "../../../packages/core/src/cv-pdf";
 import { getStorage } from "../../../packages/core/src/storage";
@@ -87,6 +87,19 @@ beforeAll(async () => {
     if (req.url === "/workable") {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(WORKABLE_HTML);
+    }
+    if (req.url === "/workable-robot") {
+      // Like Qiddiya's live form: pressing Submit brings up Cloudflare "Verify you are human" and nothing is sent.
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(WORKABLE_HTML.replace("</body>", `<script>
+        document.getElementById("f").addEventListener("submit", (e) => {
+          e.preventDefault();
+          const b = document.querySelector("button[type=submit]"); b.textContent = "Submitting..."; b.disabled = true;
+          const w = document.createElement("div"); w.style.cssText = "width:300px;height:65px;border:1px solid #ccc";
+          w.innerHTML = '<span>Verify you are human</span><input type="hidden" name="cf-turnstile-response" value="">';
+          b.before(w);
+        }, true);
+      </script></body>`));
     }
     if (req.url === "/workable/submit" && req.method === "POST") {
       const chunks: Buffer[] = [];
@@ -389,6 +402,31 @@ run("auto-apply in a real browser", () => {
     expect(s.outcome).toBe("confirmed");
     expect(workableSubmissions).toHaveLength(1);
     expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", postcode: "", country: "", resume_name: "Mohamed_CV.pdf", CA_36432: "25000", CA_50967: "Yes", CA_50968: "Yes" });
+  }, 240_000);
+
+  it("hands the last step to the user when a robot check appears at Submit (nothing sent, no retry)", async () => {
+    const db = testDb();
+    const { user, job } = await setup("/workable-robot");
+    await profile.updateProfile(db, user.id, { address: "Riyadh, Saudi Arabia" });
+    for (const [q, a] of [["Expected Salary", "25000"], ["Are you willing to relocate within Saudi Arabia?", "Yes"], ["Do you hold a valid Saudi Iqama?", "Yes"]] as const) await answers.saveAnswer(db, user.id, { questionText: q, answer: a, scope: "global" });
+    ai.setAiTransportForTests(async (req) => {
+      const qs = JSON.parse(req.user.split("QUESTIONS:\n")[1] ?? "[]") as Array<{ key: string }>;
+      return { model: "t", inputTokens: 1, outputTokens: 1, content: JSON.stringify(req.schemaName === "field_rescue" ? { steps: [], reason: "none" } : { answers: qs.map((q) => ({ key: q.key, answer: null })) }) };
+    });
+    const app = await autoapply.startAutoApply(db, user.id, { jobId: job.id });
+    const r = (await applyHandlers["application.prepare"]!(ctxFor("application.prepare", { applicationId: app.id }))) as { previewId?: string };
+    expect(r.previewId, JSON.stringify(r)).toBeTruthy();
+    const ap = await autoapply.approve(db, user.id, r.previewId!);
+    const queuedFor = async () => (await db.select().from(tasks).where(and(eq(tasks.kind, "application.prepare"), eq(tasks.status, "queued")))).filter((t) => (t.payload as { applicationId?: string }).applicationId === app.id).length;
+    const before = await queuedFor();
+    const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
+    expect(s.outcome).toBe("not_submitted");
+    const [a] = await db.select().from(applications).where(eq(applications.id, app.id));
+    expect(a).toMatchObject({ status: "needs_user_action", checkpoint: "finish_in_browser" });
+    expect(a!.statusReason).toMatch(/robot check/i);
+    const [l] = await db.select().from(submissionLedger).where(eq(submissionLedger.jobDedupeKey, job.dedupeKey));
+    expect(l!.state).toBe("abandoned"); // free to be sent from Chrome
+    expect(await queuedFor()).toBe(before); // not prepared again: no loop
   }, 240_000);
 
   it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {

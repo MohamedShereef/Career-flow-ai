@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:13px/1.4 -apple-system,Segoe UI,Arial,sans-serif;width:320px;margin:12px;color:#1e293b}
+h1{font-size:15px;margin:0 0 8px} label{display:block;margin-top:8px;font-weight:600} input{width:100%;box-sizing:border-box;padding:6px;border:1px solid #cbd5e1;border-radius:6px}
+button{margin-top:10px;width:100%;padding:8px;border:0;border-radius:8px;background:#4f46e5;color:#fff;font-weight:600;cursor:pointer} button.secondary{background:#f1f5f9;color:#1e293b}
+.muted{color:#64748b} .err{color:#b91c1c} .ok{color:#15803d} .hidden{display:none}
+</style></head><body>
+<h1>CareerFlow</h1>
+<div id="link" class="hidden">
+  <div class="muted">In CareerFlow open Settings → Chrome extension → “Create link code”, then paste it here.</div>
+  <label>CareerFlow address</label><input id="server" placeholder="https://84.13.155.193.sslip.io">
+  <label>Link code</label><input id="token" placeholder="cfx_…">
+  <button id="save">Link</button>
+</div>
+<div id="ready" class="hidden">
+  <div id="who" class="muted"></div>
+  <button id="fill">Fill this application</button>
+  <div class="muted" style="margin-top:8px">Open the employer's application form first. CareerFlow fills it with the answers you reviewed; you tick any robot check and press Submit.</div>
+  <button id="unlink" class="secondary">Unlink</button>
+</div>
+<div id="msg" style="margin-top:10px"></div>
+<script src="popup.js"></script>
+</body></html>

@@ -29,3 +29,4 @@ export * as gmail from "./services/gmail";
 export * as replies from "./services/replies";
 export * as fieldMemory from "./services/field-memory";
 export * as feedback from "./services/feedback";
+export * as extension from "./services/extension";

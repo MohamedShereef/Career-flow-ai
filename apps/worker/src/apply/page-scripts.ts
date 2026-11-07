@@ -339,7 +339,11 @@ export const OUTCOME = String.raw`(() => {
     .filter((e) => vis(e) && (e.innerText || "").trim().length > 1)
     .map((e) => (e.innerText || "").trim().slice(0, 120))
     .slice(0, 6);
-  const challenge = [...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"], iframe[src*="hcaptcha.com"][src*="challenge"]')].some(vis);
+  // A robot check that appeared when Submit was pressed and is still unsolved: reCAPTCHA / hCaptcha
+  // challenges, or a Cloudflare Turnstile widget (its iframe can sit in a closed shadow root, but its
+  // hidden response input is in the page and stays empty until a person solves it).
+  const turnstile = [...document.querySelectorAll('input[name="cf-turnstile-response"]')].some((i) => !i.value && (vis(i.parentElement) || [...document.querySelectorAll('iframe[src*="challenges.cloudflare.com"]')].some(vis)));
+  const challenge = turnstile || [...document.querySelectorAll('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"], iframe[src*="hcaptcha.com"][src*="challenge"]')].some(vis);
   const submitStill = !!document.querySelector("[data-cf-submit]") && vis(document.querySelector("[data-cf-submit]"));
   // Which fields does the form say are wrong, and what does it say about each?
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();

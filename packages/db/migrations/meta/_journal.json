@@ -85,6 +85,13 @@
       "when": 1793984352558,
       "tag": "0011_oracle_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794044871881,
+      "tag": "0012_extension_tokens",
+      "breakpoints": true
     }
   ]
 }

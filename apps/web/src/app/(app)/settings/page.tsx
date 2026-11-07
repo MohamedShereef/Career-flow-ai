@@ -1,5 +1,8 @@
 import Link from "next/link";
-import { SOURCE_HELP, auth, autoapply, dashboard, discovery, gmail, logins, settings } from "@careerflow/core";
+import { SOURCE_HELP, auth, autoapply, dashboard, discovery, extension, gmail, logins, settings } from "@careerflow/core";
+import { headers } from "next/headers";
+import { unlinkExtensionAction } from "@/actions/extension";
+import { ExtensionLink } from "@/components/extension-link";
 import { changePasswordAction, signOutOtherSessionsAction } from "@/actions/auth";
 import { autopilotAction, connectGmailAction, deleteLoginAction, disconnectGmailAction, saveAvailabilityAction, saveLoginAction, syncGmailAction } from "@/actions/applications";
 import { consentAction, saveAutomationAction } from "@/actions/profile";
@@ -11,7 +14,7 @@ import { requireUser } from "@/lib/session";
 
 export const metadata = { title: "Settings" };
 
-const TABS = [["automation", "Automation & limits"], ["sources", "Job sources"], ["logins", "Saved logins"], ["consent", "Consent"], ["integrations", "Integrations"], ["security", "Security"], ["diagnostics", "Diagnostics"]] as const;
+const TABS = [["automation", "Automation & limits"], ["sources", "Job sources"], ["logins", "Saved logins"], ["extension", "Chrome extension"], ["consent", "Consent"], ["integrations", "Integrations"], ["security", "Security"], ["diagnostics", "Diagnostics"]] as const;
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const user = await requireUser();
@@ -116,10 +119,42 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
       {tab === "sources" && <Sources />}
       {tab === "logins" && <SavedLogins userId={user.id} />}
+      {tab === "extension" && <ChromeExtension userId={user.id} />}
       {tab === "integrations" && <Integrations userId={user.id} />}
       {tab === "security" && <Security userId={user.id} />}
       {tab === "diagnostics" && <Diagnostics />}
     </>
+  );
+}
+
+async function ChromeExtension({ userId }: { userId: string }) {
+  const linked = await extension.listTokens(db(), userId);
+  const h = await headers();
+  const server = process.env.APP_URL?.replace(/\/$/, "") || `https://${h.get("x-forwarded-host") ?? h.get("host")}`;
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <Card title="Finish applications in your own Chrome" description="Some employer sites show a robot check (“Verify you are human”) or need you signed in. CareerFlow prepares everything; the extension fills the form in your Chrome with the answers you reviewed, and you tick the check and press Submit yourself. It then marks the application as sent.">
+        <ol className="list-decimal space-y-1 pl-5 text-sm">
+          <li><a className="text-brand-700 underline" href="/careerflow-chrome.zip" download>Download the extension</a> and unzip it.</li>
+          <li>In Chrome open <code>chrome://extensions</code>, turn on <b>Developer mode</b> (top right), click <b>Load unpacked</b> and choose the <code>careerflow-chrome</code> folder.</li>
+          <li>Pin it (puzzle icon → pin), click it, and paste the address and link code below.</li>
+          <li>On an application that needs you, open the employer's form in Chrome and click <b>Fill this application</b>.</li>
+        </ol>
+      </Card>
+      <Card title="Link code">
+        <ExtensionLink server={server} />
+        {linked.length > 0 && (
+          <ul className="mt-4 divide-y divide-line text-sm">
+            {linked.map((t) => (
+              <li key={t.id} className="flex items-center justify-between py-2">
+                <span>{t.name} · linked {fmtDate(t.createdAt)}{t.lastUsedAt ? ` · last used ${fmtDate(t.lastUsedAt)}` : ""}</span>
+                <ActionForm action={unlinkExtensionAction}><input type="hidden" name="id" value={t.id} /><SubmitButton className="btn-secondary" pendingText="Unlinking…">Unlink</SubmitButton></ActionForm>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
   );
 }
 

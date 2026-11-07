@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC = ["/login", "/signup", "/forgot-password", "/reset-password", "/api/health"];
+// /api/extension/* authenticates with the extension's link code instead of the session cookie.
+const PUBLIC = ["/login", "/signup", "/forgot-password", "/reset-password", "/api/health", "/api/extension"];
 const COOKIE = process.env.NODE_ENV === "production" ? "__Host-cf_session" : "cf_session";
 
 /** Optimistic gate only — every page and action re-validates the session against the database. */

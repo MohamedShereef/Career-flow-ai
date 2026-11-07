@@ -177,6 +177,21 @@ export const users = pgTable(
   (t) => [uniqueIndex("users_email_lower_uq").on(sql`lower(${t.email})`)],
 );
 
+/** Links the CareerFlow Chrome extension to an account. Only a SHA-256 of the token is stored. */
+export const extensionTokens = pgTable(
+  "extension_tokens",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    name: text("name").notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: ts("last_used_at"),
+    revokedAt: ts("revoked_at"),
+  },
+  (t) => [uniqueIndex("extension_tokens_hash_uq").on(t.tokenHash), index("extension_tokens_user_idx").on(t.userId)],
+);
+
 export const sessions = pgTable(
   "sessions",
   {

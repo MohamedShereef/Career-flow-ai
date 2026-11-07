@@ -9,3 +9,7 @@ coverage/
 .turbo
 dist
 *.tsbuildinfo
+
+# Built by scripts/build-extension.mts
+extension/dist/
+apps/web/public/careerflow-chrome.zip

@@ -84,6 +84,19 @@ export default async function ApplicationPage({ params }: { params: Promise<{ id
         </div>
       )}
 
+      {app.status === "needs_user_action" && ["finish_in_browser", "uncertain", "blocked_captcha", "blocked_fill_failed", "blocked_job_board"].includes(app.checkpoint ?? "") && (
+        <div className="mb-6">
+          <Card title="Finish it in your Chrome" description="CareerFlow fills the employer's form in your own browser with the answers above; you tick any “Verify you are human” box and press Submit yourself. The application is then marked as sent here.">
+            <ol className="list-decimal space-y-1 pl-5 text-sm">
+              <li>Open <a className="text-brand-700 underline" href={applyUrl} target="_blank" rel="noopener">the employer's application form</a> in Chrome.</li>
+              <li>Click the CareerFlow extension → <b>Fill this application</b>. Fields it couldn't fill are listed with a Copy button.</li>
+              <li>Tick the robot check if shown and press the site's Submit button.</li>
+            </ol>
+            <p className="mt-2 text-xs text-muted">No extension yet? <Link className="text-brand-700 underline" href="/settings?tab=extension">Settings → Chrome extension</Link> (2 minutes, once).</p>
+          </Card>
+        </div>
+      )}
+
       {uncertain && (
         <Card title="Did it go through?" description="We pressed Submit but the page didn't clearly confirm it. Check your email for a receipt from the employer.">
           <div className="flex flex-wrap gap-3">

@@ -871,6 +871,9 @@ export interface SubmitResult {
  * when the form is still there with visible errors (or a challenge), i.e. the
  * employer clearly did not receive it.
  */
+/** Marker the core uses to tell "robot check at Submit" apart from form errors. */
+export const ROBOT_AT_SUBMIT = "ROBOT_CHECK_AT_SUBMIT";
+
 export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
   const found = (await form.evaluate(FIND_SUBMIT)) as boolean;
   if (!found) return { outcome: "not_submitted", url: page.url(), summary: "No Submit button found", errors: ["No Submit button found on the form"], screenshot: await screenshot(page).catch(() => null) };
@@ -892,7 +895,9 @@ export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
     }
     if (!last) continue;
     if (pre?.confirmed && last.confirmed && last.submitStill) last.confirmed = false;
-    if (last.confirmed || last.challenge) break;
+    if (last.confirmed) break;
+    // Many robot checks pass by themselves within seconds; give it time before handing it to the user.
+    if (last.challenge && i >= 15) break;
     if (last.errors.length && last.submitStill && i >= 3) break;
     if (page.url() !== before && i >= 3 && !last.submitStill) break;
   }
@@ -900,7 +905,7 @@ export async function submit(form: Frame, page: Page): Promise<SubmitResult> {
   const shot = await screenshot(page).catch(() => null);
   const url = page.url();
   if (last?.confirmed) return { outcome: "confirmed", url, summary: last.confirmation || "Confirmation shown", errors: [], screenshot: shot };
-  if (last?.challenge) return { outcome: "not_submitted", url, summary: "CAPTCHA challenge", errors: ["The site showed a CAPTCHA challenge"], screenshot: shot };
+  if (last?.challenge) return { outcome: "not_submitted", url, summary: "Robot check at Submit", errors: [ROBOT_AT_SUBMIT], screenshot: shot };
   if (last && last.submitStill && (last.errors.length || last.invalid?.length)) {
     const detailed = (last.invalid ?? []).map((f) => `${f.label || "a field"}${f.message ? `: ${f.message}` : ""}`);
     const errors = [...new Set([...detailed, ...last.errors.filter((e) => !detailed.length || !/correct the errors/i.test(e))])].slice(0, 8);

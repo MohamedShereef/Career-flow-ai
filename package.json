@@ -12,7 +12,8 @@
   "scripts": {
     "dev": "npm run dev -w @careerflow/web",
     "dev:worker": "npm run dev -w @careerflow/worker",
-    "build": "npm run build -w @careerflow/web",
+    "build": "npm run build:extension && npm run build -w @careerflow/web",
+    "build:extension": "tsx scripts/build-extension.mts",
     "start:worker": "npm run start -w @careerflow/worker",
     "db:generate": "npm run generate -w @careerflow/db",
     "db:migrate": "npm run migrate -w @careerflow/db",

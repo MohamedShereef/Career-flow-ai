@@ -643,6 +643,12 @@ export async function savePreview(
   });
 }
 
+/** The answers of the newest preview of an application (what the user reviewed). */
+export async function latestPreview(db: Executor, userId: string, applicationId: string) {
+  const [p] = await db.select().from(applicationPreviews).where(and(eq(applicationPreviews.applicationId, applicationId), eq(applicationPreviews.userId, userId))).orderBy(desc(applicationPreviews.version)).limit(1);
+  return p ? { id: p.id, version: p.version, data: readPreview(p) } : null;
+}
+
 function readPreview(p: typeof applicationPreviews.$inferSelect) {
   return JSON.parse(decrypt(p.answersEnc, aadPreview(p.userId, p.applicationId))) as { url: string; atsKind: string; answers: PlannedAnswer[]; skippedOptional: number; steps?: number };
 }
@@ -759,6 +765,13 @@ export async function recordOutcome(
       await tx.insert(submissionEvidence).values({ userId: app.userId, applicationId: app.id, kind: "confirmation_page", level: "website", summary: input.summary, url: input.url, documentId: shot?.id ?? null });
       await event(tx, app.userId, app.id, "evidence", "submit", `Submitted. The employer's site confirmed: “${input.summary.slice(0, 160)}”`);
       await feedback.record(tx, app.userId, app.jobId, "applied");
+    } else if (input.outcome === "not_submitted" && (input.errors ?? []).includes("ROBOT_CHECK_AT_SUBMIT")) {
+      // The site asked for "Verify you are human" when Submit was pressed: hand the last step to the user.
+      await tx.update(submissionLedger).set({ state: "abandoned", updatedAt: now }).where(ledgerWhere);
+      await tx.update(approvals).set({ invalidatedAt: now, invalidatedReason: "robot_check" }).where(eq(approvals.id, input.approvalId));
+      const msg = "The employer's site asked for a robot check (“Verify you are human”) when Submit was pressed, so nothing was sent. Finish it in your Chrome: open the employer's form and click the CareerFlow extension → “Fill this application”, then tick the check and press Submit.";
+      await tx.update(applications).set({ status: "needs_user_action", statusReason: msg, checkpoint: "finish_in_browser", updatedAt: now }).where(eq(applications.id, app.id));
+      await event(tx, app.userId, app.id, "error", "submit", msg, shot ? { screenshotDocumentId: shot.id } : undefined);
     } else if (input.outcome === "not_submitted") {
       await tx.update(submissionLedger).set({ state: "abandoned", updatedAt: now }).where(ledgerWhere);
       await tx.update(approvals).set({ invalidatedAt: now, invalidatedReason: "form_rejected" }).where(eq(approvals.id, input.approvalId));

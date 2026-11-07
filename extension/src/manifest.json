@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "CareerFlow – finish applications",
+  "version": "1.0.0",
+  "description": "Fills an employer's application form with the answers you reviewed in CareerFlow. You tick any robot check and press Submit yourself.",
+  "action": { "default_popup": "popup.html", "default_title": "CareerFlow" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["storage", "activeTab", "scripting"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "icons": { "128": "icon128.png" }
+}
