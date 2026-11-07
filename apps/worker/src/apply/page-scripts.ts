@@ -145,6 +145,12 @@ export const EXTRACT = String.raw`(() => {
     return false;
   };
 
+  // Ids some sites generate fresh on every page load (Workable "gBvAmm1PMYzj2Dap"): never part of a key,
+  // or the same field would look new at submit time and the form would seem to have changed.
+  const randomToken = (t) => t.length >= 10 && /[a-z]/.test(t) && (/[A-Z]/.test(t) || (t.match(/\d/g) || []).length >= 3) && /\d|[A-Z].*[a-z].*[A-Z]/.test(t);
+  const stableId = (id) => (id && !id.split(/[_-]+/).some(randomToken) ? id : "");
+  const keyBase = (el, raw) => el.getAttribute("name") || el.getAttribute("data-ui") || stableId(el.id) || el.getAttribute("data-automation-id") || raw;
+
   const counts = new Map();
   const mkKey = (type, base) => {
     const k = type + ":" + clean(String(base)).toLowerCase().slice(0, 80);
@@ -170,7 +176,7 @@ export const EXTRACT = String.raw`(() => {
       const optLabel = (g) => clean((g.labels && g.labels[0] && textOf(g.labels[0])) || g.getAttribute("aria-label") || g.value);
       if (t === "checkbox" && group.length === 1) {
         const raw = optLabel(el) || labelFor(el);
-        const key = mkKey("checkbox", el.name || el.id || raw);
+        const key = mkKey("checkbox", keyBase(el, raw));
         tag(el, key);
         fields.push({ key, label: strip(raw), type: "checkbox", required: isReq(el, raw) });
       } else {
@@ -189,7 +195,7 @@ export const EXTRACT = String.raw`(() => {
     if (valueHolder(el) || machineOnly(el)) continue;
     const raw = labelFor(el);
     const type = el.tagName === "SELECT" ? "select" : el.tagName === "TEXTAREA" ? "textarea" : t === "file" ? "file" : el.getAttribute("role") === "combobox" ? "combobox" : ["email", "tel", "url", "number", "date"].includes(t) ? t : "text";
-    const key = mkKey(type, el.name || el.id || raw);
+    const key = mkKey(type, keyBase(el, raw));
     tag(el, key);
     const f = { key, label: strip(raw), type, required: isReq(el, raw) };
     // What the field itself says it accepts.
@@ -214,7 +220,7 @@ export const EXTRACT = String.raw`(() => {
     if (dlg && !vis(dlg)) continue; // belongs to an upload dialog that isn't open
 
     const raw = labelFor(el);
-    const key = mkKey("file", el.name || el.id || raw);
+    const key = mkKey("file", keyBase(el, raw));
     tag(el, key);
     fields.push({ key, label: strip(raw), type: "file", required: isReq(el, raw), accept: el.getAttribute("accept") });
   }
@@ -244,7 +250,7 @@ export const EXTRACT = String.raw`(() => {
   for (const el of root.querySelectorAll('button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]:not(input)')) {
     if (!vis(el) || el.disabled || el.getAttribute("aria-disabled") === "true") continue;
     const raw = labelFor(el);
-    const key = mkKey("listbox", el.getAttribute("name") || el.id || el.getAttribute("data-automation-id") || raw);
+    const key = mkKey("listbox", keyBase(el, raw));
     tag(el, key);
     fields.push({ key, label: strip(raw), type: "listbox", required: el.getAttribute("aria-required") === "true" || /\*/.test(raw), options: [] });
   }

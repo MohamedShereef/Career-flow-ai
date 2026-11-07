@@ -34,6 +34,21 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
   <button type="submit">Submit application</button>
 </form>
 <script>
+  // Workable gives the resume input a fresh random id on every page load.
+  (() => {
+    const abc = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const rnd = "Ab1" + Array.from({ length: 13 }, () => abc[Math.floor(Math.random() * abc.length)]).join("");
+    const inp = document.getElementById("input_files_rs");
+    inp.id = "input_files_input_" + rnd;
+    inp.setAttribute("aria-labelledby", rnd + "_label description_input_" + rnd);
+    document.getElementById("rs_label").id = rnd + "_label";
+    document.getElementById("description_input_rs").id = "description_input_" + rnd;
+    document.querySelectorAll('label[for="input_files_rs"]').forEach((l) => l.setAttribute("for", "input_files_input_" + rnd));
+    inp.removeAttribute("name"); // like Workable: no name on the file input; the page uploads it itself
+    const got = document.createElement("input");
+    got.type = "hidden"; got.name = "resume_name"; inp.after(got);
+    inp.addEventListener("change", () => { got.value = inp.files[0] ? inp.files[0].name : ""; });
+  })();
   // Phone: the country code lives on the button; the field keeps the national number, formatted.
   const ph = document.getElementById("phone");
   ph.addEventListener("input", () => {

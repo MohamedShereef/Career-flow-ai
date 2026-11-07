@@ -425,6 +425,11 @@ const aadPreview = (userId: string, applicationId: string) => `preview:${userId}
 
 // ───────────────────────── Helpers ─────────────────────────
 
+/** Add a line to an application's history (worker side). */
+export async function logEvent(db: Executor, userId: string, applicationId: string, kind: (typeof applicationEvents.$inferInsert)["kind"], stage: string, message: string) {
+  await event(db, userId, applicationId, kind, stage, message);
+}
+
 async function event(db: Executor, userId: string, applicationId: string, kind: (typeof applicationEvents.$inferInsert)["kind"], stage: string, message: string, details?: unknown) {
   await db.insert(applicationEvents).values({ userId, applicationId, kind, stage, message, details: details ?? null });
 }

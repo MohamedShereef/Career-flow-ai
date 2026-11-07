@@ -227,7 +227,14 @@ const submitHandler: Handler = async (ctx) => {
   }
 
   const reprepare = async (why: string) => {
-    await ctx.db.update(applications).set({ status: "processing", checkpoint: "queued_prepare", statusReason: "The employer changed the form — preparing a new version for your review.", updatedAt: new Date() }).where(eq(applications.id, app.id));
+    // Twice in a row means CareerFlow itself reads the form differently each time — stop instead of looping.
+    const changes = Number((app.checkpointData as { formChanges?: number } | null)?.formChanges ?? 0) + 1;
+    if (changes >= 3) {
+      await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `The form looked different every time it was opened to send (${why}). Nothing was sent.` }, ctx.task.id);
+      return { formChanged: why, stopped: true };
+    }
+    await ctx.db.update(applications).set({ status: "processing", checkpoint: "queued_prepare", statusReason: "The employer changed the form — preparing a new version for your review.", checkpointData: { ...((app.checkpointData as Record<string, unknown> | null) ?? {}), formChanges: changes }, updatedAt: new Date() }).where(eq(applications.id, app.id));
+    await autoapply.logEvent(ctx.db, app.userId, app.id, "error", "submit", `Not sent: the employer's form was different when opened to send (${why.slice(0, 200)}). Preparing it again for your review.`);
     await queue.enqueue(ctx.db, { kind: "application.prepare", userId: app.userId, payload: { applicationId }, dedupeKey: `apply:prepare:${applicationId}`, maxAttempts: 2, timeoutSeconds: 900 });
     return { formChanged: why };
   };
