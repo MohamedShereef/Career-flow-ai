@@ -282,3 +282,18 @@ describe("technical details for support", () => {
     expect(d.technical).toContain('Postal code · input#postal_code[name=postal_code] · "13112" → ""');
   });
 });
+
+describe("options worded differently", () => {
+  it("uses a saved answer when the site's option differs only in wording (Bachelor's Degree → Bachelor Degree)", async () => {
+    const { user } = await makeUser();
+    const db = testDb();
+    await answers.saveAnswer(db, user.id, { questionText: "Highest Education Level", answer: "Bachelor's Degree", scope: "global" });
+    setAiTransportForTests(async () => ({ model: "t", inputTokens: 1, outputTokens: 1, content: JSON.stringify({ answers: [] }) }));
+    const plan = await autoapply.planAnswers(db, ctx(user.id), {
+      url: "https://x", atsKind: "workable", pageTitle: "", blockers: [],
+      fields: [{ key: "radio:ca_35795", label: "Highest Education Level", type: "radio", required: true, options: ["Highschool", "Diploma", "Bachelor Degree", "Masters", "PhD", "Other"] }],
+    });
+    expect(plan.missing).toEqual([]);
+    expect(plan.answers[0]!.value).toEqual({ kind: "text", value: "Bachelor Degree" });
+  });
+});

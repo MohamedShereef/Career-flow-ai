@@ -121,11 +121,16 @@ const isNumeric = (f: FormField) => f.type === "number" || /\ba number\b/.test(f
 
 const norm = (s: string) => normalizeQuestion(s.replace(/\*/g, " "));
 
+/** "Bachelor's Degree" ≈ "Bachelor Degree", "Master’s" ≈ "Masters": wording only, same meaning. */
+const loose = (s: string) => s.toLowerCase().replace(/[’'`]s\b/g, "s").replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\b(\w{3,})s\b/g, "$1").trim();
+
 function bestOption(options: string[] | undefined, wanted: string): string | null {
   if (!options?.length) return wanted;
   const w = wanted.trim().toLowerCase();
   const exact = options.find((o) => o.trim().toLowerCase() === w);
   if (exact) return exact;
+  const same = options.filter((o) => loose(o) === loose(wanted));
+  if (same.length === 1) return same[0]!;
   const yes = /^(yes|y|true|نعم)$/i.test(w);
   const no = /^(no|n|false|لا)$/i.test(w);
   if (yes) return options.find((o) => /^\s*yes\b/i.test(o)) ?? null;
