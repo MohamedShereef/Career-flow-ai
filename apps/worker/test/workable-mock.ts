@@ -7,8 +7,9 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
   <div><label for="resume">Resume *</label><input id="resume" name="resume" type="file" required></div>
   <div><label for="phone">Phone *</label>
     <div class="styles--phone"><button type="button" aria-label="Country">🇸🇦 +966</button><input id="phone" name="phone" type="tel" required></div></div>
-  <div><label for="address">Address *</label><input id="address" name="address" autocomplete="off" required>
+  <div id="addr-box"><label id="lab-a" for="address">Address *</label><input id="address" name="address" autocomplete="off" required>
     <ul id="addr-sugg" class="sugg hidden" role="listbox"></ul></div>
+  <div id="zip-box"><label id="lab-z" for="postal_code">Postal code *</label><input id="postal_code" name="postal_code" required></div>
   <div class="styles--question"><span class="styles--title">Expected Salary</span><span>*</span>
     <div class="styles--control"><input id="CA_36432" name="CA_36432" inputmode="numeric" required></div></div>
   <div class="styles--question"><span class="styles--title">Are you willing to relocate within Saudi Arabia?</span><span>*</span>
@@ -37,12 +38,15 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
   // Salary: digits only — anything else empties the field.
   const sal = document.getElementById("CA_36432");
   sal.addEventListener("input", () => { if (/\D/.test(sal.value)) sal.value = ""; });
-  // Address: only a picked suggestion is kept.
-  const ad = document.getElementById("address"), list = document.getElementById("addr-sugg");
-  let picked = false;
-  ad.addEventListener("input", () => {
+  // Address: only a picked suggestion is kept. Handlers find the field by id at event time, because the
+  // form below "re-renders" by reusing DOM nodes (as React does).
+  const list = document.getElementById("addr-sugg");
+  const adr = () => document.getElementById("address");
+  let picked = false, swapped = false;
+  document.addEventListener("input", (e) => {
+    if (e.target.id !== "address") return;
     picked = false;
-    const q = ad.value.trim().toLowerCase();
+    const q = e.target.value.trim().toLowerCase();
     const all = ["Riyadh, Saudi Arabia", "Riyadh Al Khabra, Saudi Arabia", "Jeddah, Saudi Arabia"];
     const hits = q.length >= 3 ? all.filter((x) => x.toLowerCase().startsWith(q.slice(0, 3))) : [];
     list.innerHTML = hits.map((x) => '<li role="option">' + x + "</li>").join("");
@@ -51,12 +55,21 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
   list.addEventListener("click", (e) => {
     const li = e.target.closest("li");
     if (!li) return;
-    ad.value = li.textContent; picked = true; list.classList.add("hidden");
+    adr().value = li.textContent; picked = true; list.classList.add("hidden");
+    // Re-render after the address is chosen: the same two <input> nodes swap roles (and their values move with them).
+    if (!swapped) setTimeout(() => {
+      swapped = true;
+      const a = document.querySelector("#addr-box input"), z = document.querySelector("#zip-box input");
+      const av = a.value, zv = z.value;
+      a.id = "postal_code"; a.name = "postal_code"; z.id = "address"; z.name = "address";
+      document.getElementById("addr-box").appendChild(z); document.getElementById("zip-box").appendChild(a);
+      a.value = zv; z.value = av;
+    }, 50);
   });
+  document.addEventListener("focusout", (e) => { if (e.target.id === "address") setTimeout(() => { if (!picked) adr().value = ""; list.classList.add("hidden"); }, 150); });
   // Dropdown: opens on click; picking sets the visible box and the hidden value.
   const cb = document.getElementById("input_CA_50968_input"), lb = document.getElementById("input_CA_50968_listbox"), hold = document.querySelector('[name="CA_50968"]');
   cb.addEventListener("click", () => { lb.classList.remove("hidden"); cb.setAttribute("aria-expanded", "true"); });
   lb.addEventListener("click", (e) => { const li = e.target.closest("li"); if (!li) return; cb.value = li.textContent; hold.value = li.textContent; lb.classList.add("hidden"); cb.setAttribute("aria-expanded", "false"); });
-  // Stray keys typed while focus sits elsewhere must not reach this field (would corrupt it).
-  ad.addEventListener("blur", () => setTimeout(() => { if (!picked) ad.value = ""; list.classList.add("hidden"); }, 150));
+
 </script></body></html>`;

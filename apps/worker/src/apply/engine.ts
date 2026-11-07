@@ -10,7 +10,7 @@ import type { autoapply, fieldMemory } from "@careerflow/core";
 import { createHash } from "node:crypto";
 import { alternatives, bestOption } from "./match-option";
 type RescueStep = fieldMemory.RescueStep;
-import { BOT_CHECK, CHOOSE, ENTER_SAFE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, SUBMIT_GUARD, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT, FOCUS_OK } from "./page-scripts";
+import { BOT_CHECK, CHOOSE, ENTER_SAFE, EXTRACT, FIELD_DEBUG, FIND_APPLY, POPUP_ID, SAFE_TARGET, SET_NEARBY_SELECT, SUBMIT_GUARD, WIDGET_SIG, FIND_NAV, FIND_SUBMIT, LISTBOX_OPTIONS, LOGIN_INFO, OUTCOME, READBACK, SET_SELECT, FOCUS_OK, KEY_STALE, FIELD_MAP } from "./page-scripts";
 
 type FormSnapshot = autoapply.FormSnapshot;
 type PlannedAnswer = autoapply.PlannedAnswer;
@@ -644,6 +644,8 @@ class FillError extends Error {
 }
 
 async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, memory?: FillMemory, allowRescue = false): Promise<{ chosen: string; ai: boolean } | undefined> {
+  // The page may have re-rendered since it was read: make sure the key still points at this field.
+  if (await form.evaluate(`${KEY_STALE}(${JSON.stringify(a.key)})`).catch(() => false)) await retag(form);
   let loc = form.locator(`[data-cf-key="${a.key.replace(/"/g, '\\"')}"]`);
   if (!(await loc.count())) {
     await retag(form);
@@ -655,6 +657,8 @@ async function fillOne(form: Frame, page: Page, a: PlannedAnswer, files: Files, 
   const group = groupOf(a.type);
   const sig = ((await form.evaluate(`${WIDGET_SIG}(${JSON.stringify(a.key)})`).catch(() => "")) as string) || `${group}:unknown`;
 
+  // Already right (e.g. second pass): don't type again — some widgets append every new entry.
+  if (group !== "file" && (await keeps(form, a))) return undefined;
   const learned = memory ? await memory.order(sig, group).catch(() => []) : [];
   const plan: Array<{ strategy: string; steps: RescueStep[] | null }> = [...learned];
   for (const st of DEFAULT_ORDER[group]) if (!plan.some((p) => p.strategy === st)) plan.push({ strategy: st, steps: null });
@@ -788,6 +792,8 @@ export interface FillResult {
   chosen: Record<string, { chosen: string; ai: boolean }>;
   /** Fields that could not be set (with the reason). Required ones block the application. */
   problems: Array<{ key: string; label: string; reason: string; required: boolean; wanted?: string; debug?: unknown }>;
+  /** Every field CareerFlow filled: its element and what the page holds now (support reports). */
+  map: Array<{ key: string; label: string; required: boolean; wanted: string; el: string; value: string; problem?: string }>;
 }
 
 /**
@@ -834,7 +840,14 @@ export async function fill(form: Frame, page: Page, answers: PlannedAnswer[], fi
     const blocked = (await form.evaluate("window.__cfBlocked || 0").catch(() => 0)) as number;
     problems.push({ key: a.key, label: a.label, reason: errors.get(a.key) ?? `the page didn't keep the value (wanted "${wanted.slice(0, 60)}", page shows "${String(back[a.key] ?? "").slice(0, 60)}")`, required: required ? required.has(a.key) : true, wanted, debug: { ...(debug as object | null ?? {}), attempts: attemptsByKey.get(a.key) ?? [], blockedSubmits: blocked } });
   }
-  return { problems, chosen };
+  const mapped = ((await form.evaluate(`${FIELD_MAP}()`).catch(() => [])) ?? []) as Array<{ key: string; el: string; value: string }>;
+  const els = new Map(mapped.map((x) => [x.key, x]));
+  const map = answers.map((a) => {
+    const p = problems.find((x) => x.key === a.key);
+    const w = a.value.kind === "text" ? a.value.value : a.value.kind === "multi" ? a.value.values.join("; ") : a.value.kind === "bool" ? String(a.value.value) : `file:${a.value.doc}`;
+    return { key: a.key, label: a.label, required: required ? required.has(a.key) : true, wanted: w.slice(0, 60), el: els.get(a.key)?.el ?? "(not found)", value: els.get(a.key)?.value ?? "", ...(p ? { problem: p.reason.slice(0, 120) } : {}) };
+  });
+  return { problems, chosen, map };
 }
 
 export const describeProblems = (p: FillResult["problems"]) => p.map((x) => `${x.label}: ${x.reason}`).join(" | ");

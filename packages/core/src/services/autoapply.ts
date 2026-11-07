@@ -69,6 +69,8 @@ export type Blocker = {
   host?: string;
   /** Technical details for fixing the engine (field HTML, options…). */
   debug?: unknown;
+  /** Every field filled on that step: its element and what the page held (support reports). */
+  fieldMap?: Array<{ key: string; label: string; required: boolean; wanted: string; el: string; value: string; problem?: string }>;
 };
 
 export interface FormSnapshot {
@@ -560,7 +562,7 @@ export async function recordBlocker(db: Db, applicationId: string, b: Blocker, t
   const category = ({ captcha: "captcha", login_required: "login_required", unsupported_ats: "unsupported_ats", navigation_timeout: "navigation_timeout", form_missing: "form_missing", fill_failed: "readback_mismatch", job_board: "unsupported_ats", login_failed: "login_required", verification_required: "login_required" } as const)[b.kind];
   const [err] = await db
     .insert(errorRecords)
-    .values({ userId: a.userId, applicationId, taskId: taskId ?? null, stage: "prepare", category, rootCauseKey: `${category}:${a.employerKey}`, userMessage: ERROR_TEXT[b.kind], technicalDetail: { detail: b.detail, ...(b.debug ? { debug: b.debug } : {}), ...(shot ? { screenshotDocumentId: shot.id } : {}) } })
+    .values({ userId: a.userId, applicationId, taskId: taskId ?? null, stage: "prepare", category, rootCauseKey: `${category}:${a.employerKey}`, userMessage: ERROR_TEXT[b.kind], technicalDetail: { detail: b.detail, ...(b.debug ? { debug: b.debug } : {}), ...(b.fieldMap ? { fieldMap: b.fieldMap } : {}), ...(shot ? { screenshotDocumentId: shot.id } : {}) } })
     .returning();
   const reason = b.kind === "fill_failed" ? `${ERROR_TEXT.fill_failed} (${b.detail.slice(0, 300)})` : ERROR_TEXT[b.kind];
   const cp = { ...((a.checkpointData as Record<string, unknown> | null) ?? {}), ...(b.host ? { loginHost: b.host } : {}) };
@@ -876,7 +878,7 @@ export async function getDetail(db: Db, userId: string, applicationId: string) {
  * Answers the user typed for sensitive fields are already excluded from the debug data.
  */
 function technicalReport(app: typeof applications.$inferSelect, job: typeof jobs.$inferSelect, err: typeof errorRecords.$inferSelect) {
-  const t = (err.technicalDetail ?? {}) as { detail?: string; debug?: Array<{ label?: string; wanted?: string; debug?: Record<string, unknown> }>; invalid?: unknown; errors?: unknown; url?: string };
+  const t = (err.technicalDetail ?? {}) as { detail?: string; debug?: Array<{ label?: string; wanted?: string; debug?: Record<string, unknown> }>; fieldMap?: Blocker["fieldMap"]; invalid?: unknown; errors?: unknown; url?: string };
   const lines = [
     `CareerFlow technical details — ${new Date(err.createdAt).toISOString()}`,
     `Job: ${job.title} · ${job.companyName}`,
@@ -898,6 +900,10 @@ function technicalReport(app: typeof applications.$inferSelect, job: typeof jobs
       `tried: ${JSON.stringify(d.attempts ?? [])}`,
       `html: ${String(d.html ?? "").slice(0, 1500)}`,
     );
+  }
+  if (t.fieldMap?.length) {
+    lines.push("", "── All fields on that step (element · wanted → page) ──");
+    for (const m of t.fieldMap) lines.push(`${m.required ? "*" : " "} ${m.label} · ${m.el} · "${m.wanted}" → "${m.value}"${m.problem ? ` · ${m.problem}` : ""}`);
   }
   return lines.filter((l) => l !== "").join("\n");
 }

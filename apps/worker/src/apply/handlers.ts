@@ -158,12 +158,12 @@ const prepare: Handler = async (ctx) => {
         return { waiting: plan.missing.length, step };
       }
       const required = new Set(fields.filter((f) => f.required).map((f) => f.key));
-      const { problems, chosen } = await fill(form, page, plan.answers, files, required, memoryFor(ctx, app.userId, page, true));
+      const { problems, chosen, map } = await fill(form, page, plan.answers, files, required, memoryFor(ctx, app.userId, page, true));
       // The preview shows exactly what the site received ("Egypt" for "Egyptian"); an AI-picked option needs a look.
       plan.answers = plan.answers.map((a) => (chosen[a.key] ? { ...a, value: { kind: "text" as const, value: chosen[a.key]!.chosen }, needsReview: a.needsReview || chosen[a.key]!.ai } : a));
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
-        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}`, debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));
+        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: `${step ? `Step ${step + 1}: ` : ""}${describeProblems(blocking)}`, debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })), fieldMap: map }, ctx.task.id, await screenshot(page).catch(() => null));
         return { blocked: "fill_failed", problems: blocking };
       }
       // Optional fields the page wouldn't take are left empty (and not part of what you approve).
@@ -260,10 +260,10 @@ const submitHandler: Handler = async (ctx) => {
       if (gone.length || added.length) return await reprepare(`step ${step + 1}: gone ${gone.map((a) => a.label).join(", ")} added ${added.map((f) => f.label).join(", ")}`);
 
       // At submit, only methods already proven on this site (or the defaults) are used — no new AI experiments.
-      const { problems } = await fill(form, page, mine, files, new Set(fields.filter((f) => f.required).map((f) => f.key)), memoryFor(ctx, app.userId, page, false));
+      const { problems, map } = await fill(form, page, mine, files, new Set(fields.filter((f) => f.required).map((f) => f.key)), memoryFor(ctx, app.userId, page, false));
       const blocking = problems.filter((p) => p.required);
       if (blocking.length) {
-        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: describeProblems(blocking), debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })) }, ctx.task.id, await screenshot(page).catch(() => null));
+        await autoapply.recordBlocker(ctx.db, app.id, { kind: "fill_failed", detail: describeProblems(blocking), debug: blocking.map((b) => ({ label: b.label, wanted: b.wanted, debug: b.debug })), fieldMap: map }, ctx.task.id, await screenshot(page).catch(() => null));
         return { blocked: "fill_failed", problems: blocking };
       }
       const nav = await navState(form);

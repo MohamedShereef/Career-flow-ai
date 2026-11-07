@@ -126,6 +126,10 @@ export const EXTRACT = String.raw`(() => {
     return n > 1 ? k + "#" + n : k;
   };
 
+  // React forms reuse the same DOM node for a different field when the form re-renders: drop every old
+  // tag first, so a node never keeps the key of the field it used to be.
+  for (const old of document.querySelectorAll("[data-cf-key]")) { old.removeAttribute("data-cf-key"); old.removeAttribute("data-cf-for"); }
+  const tag = (el, key) => { el.setAttribute("data-cf-key", key); el.setAttribute("data-cf-for", el.getAttribute("name") || el.id || ""); };
   const fields = [];
   const seenGroups = new Set();
   for (const el of root.querySelectorAll("input, select, textarea")) {
@@ -140,13 +144,13 @@ export const EXTRACT = String.raw`(() => {
       if (t === "checkbox" && group.length === 1) {
         const raw = optLabel(el) || labelFor(el);
         const key = mkKey("checkbox", el.name || el.id || raw);
-        el.setAttribute("data-cf-key", key);
+        tag(el, key);
         fields.push({ key, label: strip(raw), type: "checkbox", required: isReq(el, raw) });
       } else {
         const raw = groupLabel(el);
         const type = t === "radio" ? "radio" : "checkbox_group";
         const key = mkKey(type, el.name || raw);
-        group.forEach((g) => g.setAttribute("data-cf-key", key));
+        group.forEach((g) => tag(g, key));
         fields.push({ key, label: strip(raw), type, required: group.some((g) => g.required || g.getAttribute("aria-required") === "true") || /\*/.test(raw), options: group.map(optLabel) });
       }
       continue;
@@ -159,7 +163,7 @@ export const EXTRACT = String.raw`(() => {
     const raw = labelFor(el);
     const type = el.tagName === "SELECT" ? "select" : el.tagName === "TEXTAREA" ? "textarea" : t === "file" ? "file" : el.getAttribute("role") === "combobox" ? "combobox" : ["email", "tel", "url", "number", "date"].includes(t) ? t : "text";
     const key = mkKey(type, el.name || el.id || raw);
-    el.setAttribute("data-cf-key", key);
+    tag(el, key);
     const f = { key, label: strip(raw), type, required: isReq(el, raw) };
     // What the field itself says it accepts.
     const hint = [
@@ -183,7 +187,7 @@ export const EXTRACT = String.raw`(() => {
 
     const raw = labelFor(el);
     const key = mkKey("file", el.name || el.id || raw);
-    el.setAttribute("data-cf-key", key);
+    tag(el, key);
     fields.push({ key, label: strip(raw), type: "file", required: isReq(el, raw), accept: el.getAttribute("accept") });
   }
   // Upload buttons with no visible file field (SuccessFactors "Upload a Resume", "Attach" links…).
@@ -204,7 +208,7 @@ export const EXTRACT = String.raw`(() => {
     const around = near(el, 3);
     const raw = /resume|cv|curriculum|cover|certif|transcript|degree|diploma|document|attachment/i.test(t) ? t : (around ? around + " – " + t : t);
     const key = mkKey("file", "upload:" + raw);
-    el.setAttribute("data-cf-key", key);
+    tag(el, key);
     fields.push({ key, label: strip(raw), type: "file", required: isReq(el, raw) || /resume|cv/i.test(raw), accept: null });
   }
 
@@ -213,7 +217,7 @@ export const EXTRACT = String.raw`(() => {
     if (!vis(el) || el.disabled || el.getAttribute("aria-disabled") === "true") continue;
     const raw = labelFor(el);
     const key = mkKey("listbox", el.getAttribute("name") || el.id || el.getAttribute("data-automation-id") || raw);
-    el.setAttribute("data-cf-key", key);
+    tag(el, key);
     fields.push({ key, label: strip(raw), type: "listbox", required: el.getAttribute("aria-required") === "true" || /\*/.test(raw), options: [] });
   }
 
@@ -532,4 +536,25 @@ export const FOCUS_OK = String.raw`(([key, popupId]) => {
     if (c.contains(a)) return true;
   }
   return false;
+})`;
+
+/** True when this key's element is gone or is now a different field (React reused the node). */
+export const KEY_STALE = String.raw`((key) => {
+  const els = [...document.querySelectorAll('[data-cf-key="' + CSS.escape(key) + '"]')];
+  if (!els.length) return true;
+  return els.some((e) => e.hasAttribute("data-cf-for") && e.getAttribute("data-cf-for") !== (e.getAttribute("name") || e.id || ""));
+})`;
+
+/** Every tagged field: which element it is and what it holds now (for support reports). */
+export const FIELD_MAP = String.raw`(() => {
+  const out = [];
+  const seen = new Set();
+  for (const el of document.querySelectorAll("[data-cf-key]")) {
+    const key = el.getAttribute("data-cf-key");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const v = el.tagName === "SELECT" ? (el.selectedOptions[0] ? el.selectedOptions[0].text : "") : el.type === "file" ? [...(el.files || [])].map((f) => f.name).join("|") : el.type === "radio" || el.type === "checkbox" ? String(el.checked) : (el.value ?? el.innerText ?? "");
+    out.push({ key, el: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (el.name ? "[name=" + el.name + "]" : "") + (el.getAttribute("role") ? "[role=" + el.getAttribute("role") + "]" : "") + (el.readOnly ? "[readonly]" : ""), value: String(v).slice(0, 80) });
+  }
+  return out;
 })`;

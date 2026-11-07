@@ -273,11 +273,12 @@ describe("technical details for support", () => {
     const db = testDb();
     const [job] = await db.insert(jobs).values({ externalId: crypto.randomUUID(), dedupeKey: crypto.randomUUID(), title: "Buyer", companyName: "Acme", employerKey: "acme", sourceUrl: "https://x", applyUrl: "https://apply.example.com/j/1" }).returning();
     const [app] = await db.insert(applications).values({ userId: user.id, jobId: job!.id, employerKey: "acme", status: "processing" }).returning();
-    await autoapply.recordBlocker(db, app!.id, { kind: "fill_failed", detail: "Address: the page didn't keep the value", debug: [{ label: "Address", wanted: "Riyadh, Saudi Arabia", debug: { tag: "input", role: "combobox", value: "R", attempts: [{ method: "fill" }], html: "<div><input id='address'></div>" } }] } as autoapply.Blocker);
+    await autoapply.recordBlocker(db, app!.id, { kind: "fill_failed", detail: "Address: the page didn't keep the value", debug: [{ label: "Address", wanted: "Riyadh, Saudi Arabia", debug: { tag: "input", role: "combobox", value: "R", attempts: [{ method: "fill" }], html: "<div><input id='address'></div>" } }], fieldMap: [{ key: "text:postal_code", label: "Postal code", required: false, wanted: "13112", el: "input#postal_code[name=postal_code]", value: "", problem: "the page didn't keep the value" }] } as autoapply.Blocker);
     const d = await autoapply.getDetail(db, user.id, app!.id);
     expect(d.technical).toContain("── Address ──");
     expect(d.technical).toContain("role=combobox");
     expect(d.technical).toContain("<input id='address'>");
     expect(d.technical).toContain("https://apply.example.com/j/1");
+    expect(d.technical).toContain('Postal code · input#postal_code[name=postal_code] · "13112" → ""');
   });
 });

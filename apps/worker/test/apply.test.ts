@@ -364,7 +364,7 @@ run("auto-apply in a real browser", () => {
   it("Workable-style form: reads questions written beside the field, fits phone/salary to the field's format, picks the address suggestion", async () => {
     const db = testDb();
     const { user, job } = await setup("/workable");
-    await profile.updateProfile(db, user.id, { address: "Riyadh, Saudi Arabia" });
+    await profile.updateProfile(db, user.id, { address: "Riyadh, Saudi Arabia", postalCode: "13112" });
     await answers.saveAnswer(db, user.id, { questionText: "Expected Salary", answer: "SAR 25,000 monthly", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Are you willing to relocate within Saudi Arabia?", answer: "Yes", scope: "global" });
     await answers.saveAnswer(db, user.id, { questionText: "Do you hold a valid Saudi Iqama?", answer: "Yes", scope: "global" });
@@ -387,7 +387,7 @@ run("auto-apply in a real browser", () => {
     const s = (await applyHandlers["application.submit"]!(ctxFor("application.submit", { applicationId: app.id, approvalId: ap.id }))) as { outcome?: string };
     expect(s.outcome).toBe("confirmed");
     expect(workableSubmissions).toHaveLength(1);
-    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", CA_36432: "25000", CA_50967: "Yes", CA_50968: "Yes" });
+    expect(workableSubmissions[0]).toMatchObject({ phone: "50 000 0000", address: "Riyadh, Saudi Arabia", postal_code: "13112", CA_36432: "25000", CA_50967: "Yes", CA_50968: "Yes" });
   }, 240_000);
 
   it("never submits a form while preparing — not by Enter in a text field, not by the site's own script", async () => {
