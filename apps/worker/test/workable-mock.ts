@@ -4,7 +4,10 @@ export const WORKABLE_HTML = String.raw`<!doctype html><html><head><title>Apply 
 <form id="f" method="post" action="/workable/submit" enctype="multipart/form-data">
   <div><label for="firstname">First name *</label><input id="firstname" name="firstname" required></div>
   <div><label for="email">Email *</label><input id="email" name="email" type="email" required></div>
-  <div><label for="resume">Resume *</label><input id="resume" name="resume" type="file" required></div>
+  <div><span><strong>*</strong><span id="rs_label"><strong>Resume</strong></span></span>
+    <div data-role="dropzone"><label for="input_files_rs"><svg><desc aria-hidden="true"><p>SVGs not supported by this browser.</p></desc></svg></label>
+    <label tabindex="0" role="button" for="input_files_rs" id="description_input_rs">Choose file</label> <span>or drag and drop here</span>
+    <input data-ui="resume" tabindex="-1" id="input_files_rs" name="resume" type="file" aria-labelledby="rs_label description_input_rs" accept=".pdf,.doc,.docx" required></div></div>
   <div><label for="phone">Phone *</label>
     <div class="styles--phone"><button type="button" aria-label="Country">🇸🇦 +966</button><input id="phone" name="phone" type="tel" required></div></div>
   <div id="addr-box"><label id="lab-a" for="address">Address *</label><input id="address" name="address" autocomplete="off" required>

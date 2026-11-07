@@ -13,7 +13,15 @@ export const EXTRACT = String.raw`(() => {
     const cs = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
   };
-  const textOf = (el) => clean(el ? el.innerText || el.textContent : "");
+  // Visible text only: an icon's hidden <svg><desc> ("SVGs not supported by this browser.") is not a label.
+  const textOf = (el) => {
+    if (!el) return "";
+    const t = clean(el.innerText);
+    if (t) return t;
+    const c = el.cloneNode(true);
+    c.querySelectorAll("svg, style, script, [aria-hidden=true]").forEach((x) => x.remove());
+    return clean(c.textContent);
+  };
   const score = (f) => f.querySelectorAll("input,select,textarea").length + (f.querySelector("input[type=file]") ? 20 : 0) + (f.querySelector("input[type=email]") ? 10 : 0);
   const forms = [...document.querySelectorAll("form")].sort((a, b) => score(b) - score(a));
   const root = forms[0] && score(forms[0]) >= 3 ? forms[0] : document.body;
@@ -29,6 +37,7 @@ export const EXTRACT = String.raw`(() => {
     }
     return "";
   };
+  const generic = (t) => /^(choose|select|browse|upload|attach|add)( a)? (file|files|document)s?\b|^(browse|upload|attach)$|^or drag and drop/i.test(t);
   const idLike = (t, el) => /^[A-Za-z]{1,6}[_-]?\d{2,}$/.test(t) || t === el.name || t === el.id;
   /** The closest text written before the field inside its own block (skipping options, buttons and "*"). */
   const precedingText = (el) => {
@@ -39,7 +48,7 @@ export const EXTRACT = String.raw`(() => {
       for (let n = w.nextNode(); n; n = w.nextNode()) {
         if (el.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) break;
         const p = n.parentElement;
-        if (!p || p.closest("option, [role=option], [role=listbox], select, button, script, style, [aria-hidden=true]")) continue;
+        if (!p || p.closest("option, [role=option], [role=listbox], select, button, script, style, svg, [aria-hidden=true]")) continue;
         const own = p.closest("label");
         if (own && own.control && own.control !== el) continue; // another field's label
         const t = clean(n.textContent);
@@ -55,12 +64,14 @@ export const EXTRACT = String.raw`(() => {
   };
   const baseLabel = (el) => {
     if (el.id) {
-      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (l && textOf(l)) return textOf(l);
+      // Several labels can point at one field (an icon, then the real text): take the first with words.
+      // Button words ("Choose file", "Browse") name the control, not the question.
+      for (const l of document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]')) if (textOf(l) && !generic(textOf(l))) return textOf(l);
     }
     const lb = el.getAttribute("aria-labelledby");
     if (lb) {
-      const t = clean(lb.split(/\s+/).map((i) => textOf(document.getElementById(i))).join(" "));
+      const parts = lb.split(/\s+/).map((i) => textOf(document.getElementById(i))).filter(Boolean);
+      const t = clean((parts.filter((p) => !generic(p)).length ? parts.filter((p) => !generic(p)) : parts).join(" "));
       if (t) return t;
     }
     const al = el.getAttribute("aria-label");
@@ -88,6 +99,13 @@ export const EXTRACT = String.raw`(() => {
   // marker in a separate element next to the field.
   const isReq = (el, label) => {
     if (el.required || el.getAttribute("aria-required") === "true" || /\*/.test(label)) return true;
+    if (el.getAttribute("role") === "combobox") {
+      let b = el.parentElement;
+      for (let i = 0; i < 6 && b && b !== root; i++, b = b.parentElement) {
+        if (b.querySelectorAll("input:not([type=hidden]), select, textarea").length > 2) break;
+        if ([...b.querySelectorAll("input[required], select[required]")].some((x) => x !== el)) return true;
+      }
+    }
     // Only look inside containers that hold this field alone, so another field's asterisk never counts.
     const controls = (c) => c.querySelectorAll("input:not([type=hidden]), select, textarea, [role=combobox], button[aria-haspopup]").length;
     let c = el.parentElement;
@@ -175,8 +193,9 @@ export const EXTRACT = String.raw`(() => {
     tag(el, key);
     const f = { key, label: strip(raw), type, required: isReq(el, raw) };
     // What the field itself says it accepts.
+    const ph = (el.getAttribute("placeholder") || "").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
     const hint = [
-      el.getAttribute("placeholder") && !/^(no selection|select|choose)/i.test(el.getAttribute("placeholder")) ? "e.g. " + el.getAttribute("placeholder") : "",
+      ph && !/^(no selection|select|choose)/i.test(ph) ? "e.g. " + ph : "",
       t === "number" || el.getAttribute("inputmode") === "decimal" || el.getAttribute("inputmode") === "numeric" ? "a number" : "",
       el.getAttribute("min") != null && el.getAttribute("max") != null ? "between " + el.getAttribute("min") + " and " + el.getAttribute("max") : "",
       el.getAttribute("maxlength") && Number(el.getAttribute("maxlength")) < 200 ? "up to " + el.getAttribute("maxlength") + " characters" : "",
